@@ -49,6 +49,10 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/python/site-packages", dir);
     setenv("PYTHONPATH", path, 1);
 
+    /* Runtime data a package declared (D60). */
+    snprintf(path, sizeof path, "%s/data", dir);
+    if (access(path, R_OK) == 0) setenv("BOJO_DATA", path, 1);
+
     /* MOJO_PYTHON_LIBRARY is the primary lookup; pick the first existing name. */
     const char *libs[] = {
         "%s/python/runtime/lib/libpythonPYVER.so.1.0",

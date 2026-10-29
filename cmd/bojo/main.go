@@ -625,6 +625,10 @@ func cmdBuild(args []string) int {
 	if len(bundled) > 0 {
 		fmt.Printf("bundled %d library/ies next to the binary\n", len(bundled))
 	}
+	if err := bundleRuntimeFiles(dir, g, filepath.Dir(out)); err != nil {
+		fail(err)
+		return exitBuild
+	}
 	if cfg.Version.Python != "" {
 		if code := bundlePython(dir, cfg, out); code != exitOK {
 			return code

@@ -144,6 +144,9 @@ int main(int argc, char **argv) {
     }
     /* PYTHON-END */
 
+    snprintf(path, sizeof path, "%s/data", dir);
+    if (access(path, R_OK) == 0) setenv("BOJO_DATA", path, 1);
+
     char app[4352];
     snprintf(app, sizeof app, "%s/app.bin", dir);
     execv(app, argv);

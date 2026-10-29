@@ -63,7 +63,14 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 		return exitBuild
 	}
 
+	if err := bundleRuntimeFiles(dir, g, work); err != nil {
+		fail(err)
+		return exitBuild
+	}
 	trees := map[string]string{"lib": filepath.Join(work, "lib")}
+	if _, err := os.Stat(filepath.Join(work, "data")); err == nil {
+		trees["data"] = filepath.Join(work, "data")
+	}
 	if cfg.Version.Python != "" {
 		env, err := pyenv.Ensure(dir, cfg.Version.Python, cfg.Deps.Python)
 		if err != nil {
