@@ -25,7 +25,10 @@ link.** The consumer types no linker flags.
 - **No static ELF.** Mojo cannot do it (`modular/modular#1317`). `output = "static"`
   does not exist.
 - **No prebuilt binaries.** `run`/`install` fetch source and build locally.
-- **No global object cache** in v0.1 (D32). Everything lives in the project.
+- **No global object cache** in v0.1 (D32). Everything lives in the project. The
+  single exception is the **toolchain store** under `~/.bojo/mojo/<version>/`
+  (D43): toolchains are expensive, identical for every project and useless to
+  duplicate.
 - **No own registry server.**
 - **No second target language** (D34). Other languages appear only as hooks.
 - **No mandatory vendor directory.**
@@ -286,7 +289,7 @@ project/.bojo/modules/
 | 6 | Run pre-build hooks (topological, `cwd` = package dir, may write) | exit 2/3 |
 | 7 | Precompile into `cache/obj` — **not** for pkgs with a `pre-build` hook (D40) | exit 3 |
 | 8 | Collect linker flags from every pkg (`[linker]`) | — |
-| 9 | `mojo build <entry> -I .bojo/modules -I . <flags>` | exit 3 |
+| 9 | `mojo build <entry> -I .bojo/modules -I . <flags>` with the toolchain from `[toolchain] mojo` (D43) | exit 3 |
 | 10 | Post-build hooks, `strip`, closure, RPATH, optional stub, re-sign ad hoc | exit 3 |
 
 `MODULAR_CACHE_DIR` = `.bojo/mojo-cache` (D15). Step 10 per platform:
@@ -389,6 +392,8 @@ Blocked by 1 hook. Nothing was executed.
 | `bojo tree` / `bojo why <pkg>` | graph / provenance |
 | `bojo verify` | check the lock against a fresh checkout (never the working tree) |
 | `bojo doctor` | mojo version + fingerprint, C compiler, triple, PATH, `~/.bojo/bin` |
+| `bojo toolchain install <ver>` | install a Mojo toolchain into `~/.bojo/mojo/<ver>` (D43) |
+| `bojo toolchain list` | list installed toolchains |
 | `bojo cache list` / `bojo cache clear` | show / clear the project cache |
 | `bojo allow <id>\|--json\|--list` | approve / show hooks |
 | `bojo clean [--all]` | remove `.bojo/` (`--all`: also `out/`) |
@@ -486,6 +491,10 @@ Exit codes:
 | D40 | pkgs with a `pre-build` hook are **not** artifact-cached | hash the hook output | foreign tool versions would create stale `.mojoc` |
 | D41 | `bojo skill` prints the skill as markdown on stdout | a separate `bojo docs` command | `bojo skill > …/SKILL.md` is one step, not a build |
 | D42 | `[[deps-from]]` is an array of tables with a `repo` field | `[deps-from."<url>"]` | tags are per pkg; one table per repo allows only one version |
+| **D43** | toolchains live machine-wide in `~/.bojo/mojo/<ver>/`, installed via `python3 -m venv` + `pip install mojo==<ver>`; `[toolchain] mojo` selects one | per-project toolchain, manual install | Mojo ships as a glibc-only Python package; a venv pins it per version and a build needs no Python |
+| **D44** | bundling uses a relocatable CPython (`python-build-standalone`) plus wheels via `pip --target` | ship a conda/pixi env | conda envs bake absolute prefixes into scripts, `.pth` files and native RPATHs; relocation is guesswork |
+| **D45** | a launcher stub sets `PYTHONHOME`/`PYTHONPATH` and execs the payload (`app.bin`) | require the user to set the variables | a binary cannot set its own environment; `dir` and `onefile` share one mechanism |
+| **D46** | `[python]` is opt-in; without it the target must provide Python 3.10–3.14 | always bundle | a Python-capable bundle is roughly ten times larger; pure Mojo programs stay at 5 MB |
 
 ## 17. Open questions
 
@@ -522,6 +531,79 @@ Debian bookworm, aarch64, Mojo 1.2.0 (2016d0cd), gcc 12.
 
 Upstream: `modular/modular#1317`, open since 2023-11-21; the follow-up question
 from 2026-09-14 is unanswered.
+
+## 20. Python interop and bundling
+
+Mojo has first-class Python interop, but neither the interpreter nor any Python
+package is embedded: `mojo build --help` states that Python libraries used by a
+project "are not included in the executable binary, so they must be provided by
+the environment where you run the executable". A single-file artifact therefore
+has to carry a Python runtime of its own or the target machine must provide one.
+
+### 20.1 Two modes
+
+| Mode | When | Consequence |
+|---|---|---|
+| **host Python** | `[python]` absent | interop works only where Python 3.10–3.14 (plus the used packages) is installed; `bojo doctor` names the exact requirement |
+| **bundled Python** | `[python]` present | interpreter and packages ship with the artifact; no Python needed on the target |
+
+```toml
+[python]
+version  = "3.12"                     # must be within Mojo's supported range
+packages = ["numpy==2.1.0", "orjson"] # installed into the bundled interpreter
+```
+
+### 20.2 Why a relocatable CPython, not conda/pixi
+
+A conda/pixi environment is **not relocatable**: prefixes are baked into
+`pyvenv.cfg`, shebangs, `.pth` files and RPATHs of native extensions. Shipping one
+means shipping a path-rewriting tool and hoping every package tolerates it.
+
+bojo therefore bundles a **python-build-standalone** interpreter (relocatable by
+design, one tarball per triple) and installs wheels into it with
+`pip install --target`. Wheels of native packages (numpy, orjson, …) are plain
+`.so` plus Python files and survive relocation as long as the ABI matches the
+bundled interpreter — which it does, because the interpreter *is* the one used to
+install them.
+
+### 20.3 Layout
+
+`output = "dir"` with `[python]`:
+
+```
+out/
+  app            launcher stub: sets PYTHONHOME / PYTHONPATH, then execs app.bin
+  app.bin        the Mojo binary
+  lib/           Mojo runtime libraries (relative RPATH)
+  python/        relocatable interpreter + site-packages
+```
+
+`output = "onefile"`: the same four pieces are appended to one stub, which
+extracts them to `<cachedir>/bojo/run/<hash>/` and execs `app.bin` (D45).
+
+### 20.4 Sizes (to be measured, not yet)
+
+| Piece | Expectation |
+|---|---|
+| CPython standalone, stripped | ~25–35 MB compressed, ~60–80 MB unpacked |
+| numpy wheel | ~20 MB unpacked |
+| Mojo runtime + app | ~5.3 MB (measured, §18) |
+
+A Python-capable `onefile` therefore lands in the **40–70 MB** range. This is the
+honest price for "no Python on the target"; the numbers are estimates until the
+first real measurement is in §18.
+
+### 20.5 Rules
+
+- The bundled interpreter version must match what the Mojo runtime expects; a
+  mismatch is a hard error, not a warning (D44).
+- `bojo build` warns when Mojo source imports `python`/`PythonObject` but
+  `[python]` is absent, and names the target requirement.
+- `bojo doctor` reports: interpreter found, version, `libpython` path, whether
+  the current project bundles one.
+- Native wheels are copied as-is; no compiler is required on the target.
+- Nothing about conda/pixi is used at runtime. `bojo bundle --python-env <path>`
+  (best effort, path rewriting) is a POST-V0.1 escape hatch, not the default.
 
 ## 19. Agent skill (`bojo skill`)
 

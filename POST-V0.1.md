@@ -248,6 +248,48 @@ actually save?
 
 ---
 
+## P18 — `bojo test`
+
+**What.** Discover `_tests/*.mojo` and run them through the selected toolchain,
+with one line per file, a summary, and exit codes that match §13 (0 = pass,
+3 = failing test). `--filter <pattern>` and `--json` for CI.
+
+**Why not now.** v0.1 must first build reliably; a test runner is a thin layer on
+top of the same pipeline and only becomes useful once builds are stable.
+
+**Precondition.** Decide how it relates to an existing `Taskfile.yml` (P9).
+
+**Size.** S
+
+---
+
+## P19 — Cache for bundled Python environments
+
+**What.** Build the relocatable CPython + wheels once per (version, package set)
+and reuse it, instead of re-provisioning for every project.
+
+**Why not now.** Same reason as D32: no shared state until the single-project path
+works. The package set is part of the key.
+
+**Precondition.** A stable hash over `[python]` (version + resolved wheel set).
+
+**Size.** M
+
+---
+
+## P20 — `bojo bundle --python-env <path>` (conda/pixi escape hatch)
+
+**What.** Best-effort import of an existing conda/pixi environment into a bundle,
+including prefix rewriting of scripts, `.pth` files and native RPATHs.
+
+**Why not now.** Contradicts D44 (conda envs are structurally not relocatable) and
+needs a rewriting tool of its own. Offer it only when someone actually depends on
+it.
+
+**Size.** L
+
+---
+
 ## Explicitly **not** planned
 
 ### N1 — Per-file cache granularity

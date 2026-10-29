@@ -152,8 +152,20 @@ What an agent must say about the limits instead of improvising:
 - **A bundle needs the runtime libraries next to the binary** (`lib/` plus a
   relative RPATH) or the single-file stub. A bare `mojo build` binary only runs
   on the build machine.
-- **Python interop needs Python 3.10–3.14 on the target machine.** Python is not
-  embedded.
+- **Python interop needs Python on the target** unless the project opts in to
+  bundling. `mojo build` never embeds Python:
+
+  ```toml
+  [python]
+  version  = "3.12"
+  packages = ["numpy==2.1.0"]
+  ```
+
+  With `[python]` set, bojo ships a relocatable interpreter and the wheels with
+  the artifact (a launcher stub sets `PYTHONHOME`/`PYTHONPATH`). Without it, the
+  target machine must provide Python 3.10–3.14 and the packages. A Python-capable
+  bundle is roughly ten times larger than a pure Mojo one; say that out loud
+  instead of silently producing a binary that cannot import numpy.
 
 ## Typical errors
 
