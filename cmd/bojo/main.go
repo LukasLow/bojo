@@ -434,7 +434,7 @@ func cmdCache(args []string) int {
 
 func cmdGet(args []string) int {
 	if len(args) == 0 {
-		fail(errors.New("usage: bojo get <url>@<pkg>/<version> [--as <name>]"))
+		fail(errors.New("usage: bojo get <url>@<version> [--lib <pkg>[,<pkg>...]] [--as <name>]"))
 		return exitUsage
 	}
 	spec, err := parseSpec(args[0])
@@ -446,6 +446,15 @@ func cmdGet(args []string) int {
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--as" && i+1 < len(args) {
 			aliasName = args[i+1]
+			i++
+			continue
+		}
+		if args[i] == "--lib" && i+1 < len(args) {
+			for _, l := range strings.Split(args[i+1], ",") {
+				if l = strings.TrimSpace(l); l != "" {
+					spec.pkgs = append(spec.pkgs, l)
+				}
+			}
 			i++
 			continue
 		}
@@ -464,7 +473,7 @@ func cmdGet(args []string) int {
 		return exitUsage
 	}
 	for _, d := range cfg.DepsFrom {
-		if d.Repo == spec.repo && d.Tag == spec.pkg+"/"+spec.version {
+		if d.Repo == spec.repo && d.Tag == spec.tag() {
 			for _, l := range d.Libs {
 				if l == spec.pkg {
 					fmt.Printf("already declared: %s@%s\n", spec.pkg, spec.version)
@@ -474,6 +483,13 @@ func cmdGet(args []string) int {
 		}
 	}
 
+	if spec.pkg != "" && len(spec.pkgs) == 0 {
+		spec.pkgs = []string{spec.pkg}
+	}
+	if len(spec.pkgs) == 0 {
+		fail(errors.New("which package? use <url>@<pkg>/<version> or --lib <pkg>"))
+		return exitUsage
+	}
 	if err := appendDepFrom(dir, spec, aliasName); err != nil {
 		fail(err)
 		return exitUsage
@@ -889,7 +905,7 @@ entry   = "main.mojo"
 repo = %q
 tag  = %q
 libs = [%q]
-`, spec.repo, spec.pkg+"/"+spec.version, spec.pkg)
+`, spec.repo, spec.tag(), spec.pkg)
 	if err := os.WriteFile(filepath.Join(tmp, "bojo.toml"), []byte(cfgText), 0o644); err != nil {
 		fail(err)
 		return exitUsage
@@ -1023,7 +1039,16 @@ func resolveProject() (string, *resolve.Graph, int) {
 	return dir, g, exitOK
 }
 
-type spec struct{ repo, pkg, version string }
+type spec struct {
+	repo, pkg, version string
+	pkgs               []string
+}
+
+// tag is what the manifest stores: one version per repository (D74).
+func (s spec) tag() string { return "v" + strings.TrimPrefix(s.version, "v") }
+
+// libs is the package selection; --lib may name several.
+func (s spec) libs() []string { return s.pkgs }
 
 // parseSpec splits `url@<pkg>/<version>`: the last @ separates the repository
 // from the tag, and the tag names the package it belongs to (D6, D70).
@@ -1033,15 +1058,14 @@ func parseSpec(raw string) (spec, error) {
 		return spec{}, fmt.Errorf("%q is missing @<pkg>/<version> (example: https://github.com/owner/repo@pkg/v0.0.1)", raw)
 	}
 	repo, ref := raw[:at], raw[at+1:]
-	slash := strings.Index(ref, "/")
-	if slash < 0 {
-		return spec{}, fmt.Errorf("%q: the tag must be <pkg>/<version>, got %q", raw, ref)
+	pkgName := ""
+	if slash := strings.Index(ref, "/"); slash > 0 {
+		pkgName, ref = ref[:slash], ref[slash+1:]
 	}
-	pkgName, ver := ref[:slash], ref[slash+1:]
-	if repo == "" || pkgName == "" || ver == "" {
+	if repo == "" || ref == "" {
 		return spec{}, fmt.Errorf("%q is not a valid package reference", raw)
 	}
-	return spec{repo: repo, pkg: pkgName, version: ver}, nil
+	return spec{repo: repo, pkg: pkgName, version: ref}, nil
 }
 
 func writeLock(dir, mojoFingerprint string, g *resolve.Graph) error {
@@ -1088,8 +1112,13 @@ func appendDepFrom(dir string, s spec, alias string) error {
 	var b strings.Builder
 	b.WriteString("\n[[deps-from]]\n")
 	fmt.Fprintf(&b, "repo = %q\n", s.repo)
-	fmt.Fprintf(&b, "tag  = %q\n", s.pkg+"/"+s.version)
-	fmt.Fprintf(&b, "libs = [%q]\n", s.pkg)
+	fmt.Fprintf(&b, "tag  = %q\n", s.tag())
+	libs := s.libs()
+	quoted := make([]string, len(libs))
+	for i, l := range libs {
+		quoted[i] = fmt.Sprintf("%q", l)
+	}
+	fmt.Fprintf(&b, "libs = [%s]\n", strings.Join(quoted, ", "))
 	if alias != "" {
 		fmt.Fprintf(&b, "alias = { %s = %q }\n", s.pkg, alias)
 	}
