@@ -124,11 +124,7 @@ func Build(projectDir string, g *resolve.Graph) (*Manifest, error) {
 
 		route := old
 		if !p.Direct {
-			sum, err := hashTree(target)
-			if err != nil {
-				return nil, err
-			}
-			route = old + "_" + sum
+			route = old + "_" + identity(p.Repo, p.Commit)
 			final := filepath.Join(tmp, filepath.FromSlash(sub), route)
 			if err := os.Rename(target, final); err != nil {
 				return nil, err
@@ -300,67 +296,88 @@ func rewriteTree(root string, mapping map[string]string) error {
 	})
 }
 
-// rewriteSource rewrites `from X import …` and `import X…` at statement start.
-// Anything else that mentions X outside a comment *and outside a string* is an
-// error: a half-rewritten copy of foreign code is worse than a clear abort
-// (D67).
+// rewriteSource rewrites imports and qualified uses of a renamed route.
+//
+//	from z import label      -> from z_ab12cd34 import label
+//	import z                 -> import z_ab12cd34
+//	z.label()                -> z_ab12cd34.label()
+//
+// A bare mention that is neither an import nor a qualified use aborts the
+// vendoring: a half-rewritten copy of foreign code is worse than a clear error
+// (D67, D72).
 func rewriteSource(src string, mapping map[string]string) (string, bool, error) {
 	lines := strings.Split(src, "\n")
 	changed := false
 	var triple string
 
 	for i, line := range lines {
-		code, next := codeOnly(line, triple)
+		toks, next := tokenize(line, triple)
 		triple = next
-
-		trimmed := strings.TrimLeft(code, " \t")
-		indent := code[:len(code)-len(trimmed)]
-
-		var keyword string
-		switch {
-		case strings.HasPrefix(trimmed, "from "):
-			keyword = "from "
-		case strings.HasPrefix(trimmed, "import "):
-			keyword = "import "
+		if len(toks) == 0 {
+			continue
 		}
 
-		if keyword != "" {
-			rest := trimmed[len(keyword):]
-			end := strings.IndexAny(rest, " \t")
-			if end < 0 {
-				end = len(rest)
+		if toks[0].text == "from" && len(toks) > 1 {
+			if now, ok := mapping[toks[1].text]; ok {
+				lines[i] = replaceRange(line, toks[1].start, toks[1].end, now)
+				changed = true
 			}
-			route := rest[:end]
-			if now, ok := mapping[route]; ok {
-				// Rebuild from the code line, then append whatever the original
-				// line still carries (string literal, comment).
-				lines[i] = indent + keyword + now + rest[end:] + line[len(code):]
+			continue
+		}
+		if toks[0].text == "import" && len(toks) > 1 {
+			if now, ok := mapping[toks[1].text]; ok {
+				lines[i] = replaceRange(line, toks[1].start, toks[1].end, now)
 				changed = true
 			}
 			continue
 		}
 
-		for was := range mapping {
-			if mentionsIdentifier(trimmed, was) {
-				return "", false, fmt.Errorf("route %q is used outside an import statement: %q", was, strings.TrimSpace(line))
+		for _, t := range toks {
+			// Dotted paths arrive as one token ("z.label"); only the leading
+			// segment is the route.
+			first := t.text
+			if dot := strings.IndexByte(first, '.'); dot >= 0 {
+				first = first[:dot]
 			}
+			now, ok := mapping[first]
+			if !ok {
+				continue
+			}
+			// Qualified use: a dot must follow, either inside the token or as
+			// the next one.
+			if first == t.text && t.next != "." {
+				return "", false, fmt.Errorf("route %q is used outside an import statement: %q",
+					first, strings.TrimSpace(line))
+			}
+			lines[i] = replaceRange(lines[i], t.start, t.start+len(first), now)
+			changed = true
 		}
 	}
 	return strings.Join(lines, "\n"), changed, nil
 }
 
-// codeOnly removes comments and string literals from one line so that a mention
-// inside a docstring cannot be mistaken for code. It returns the remaining code
-// and the triple-quote state at the end of the line.
-func codeOnly(line, triple string) (string, string) {
-	var b strings.Builder
+func replaceRange(s string, start, end int, with string) string {
+	return s[:start] + with + s[end:]
+}
+
+type token struct {
+	text  string
+	next  string // text of the following token, "" if none
+	start int
+	end   int
+}
+
+// tokenize returns the code tokens of one line: identifiers, dotted paths and
+// punctuation. Strings and comments are skipped, triple-quoted strings carry
+// their state across lines.
+func tokenize(line, triple string) ([]token, string) {
+	var toks []token
 	i := 0
 	for i < len(line) {
 		if triple != "" {
 			if strings.HasPrefix(line[i:], triple) {
 				i += len(triple)
 				triple = ""
-				b.WriteString(" ")
 				continue
 			}
 			i++
@@ -369,15 +386,14 @@ func codeOnly(line, triple string) (string, string) {
 		c := line[i]
 		switch {
 		case c == '#':
-			return b.String(), ""
+			i = len(line)
 		case c == '"' || c == '\'':
-			if strings.HasPrefix(line[i:], strings.Repeat(string(c), 3)) {
-				triple = strings.Repeat(string(c), 3)
+			q := strings.Repeat(string(c), 3)
+			if strings.HasPrefix(line[i:], q) {
+				triple = q
 				i += 3
-				b.WriteString(" ")
 				continue
 			}
-			// single-line string
 			j := i + 1
 			for j < len(line) && line[j] != c {
 				if line[j] == '\\' {
@@ -386,14 +402,31 @@ func codeOnly(line, triple string) (string, string) {
 				j++
 			}
 			i = j + 1
-			b.WriteString(" ")
-			continue
+		case isIdent(c):
+			j := i
+			for j < len(line) && isIdent(line[j]) {
+				j++
+			}
+			// Keep dotted module paths together (a.b.c).
+			for j+1 < len(line) && line[j] == '.' && isIdent(line[j+1]) {
+				j++
+				for j < len(line) && isIdent(line[j]) {
+					j++
+				}
+			}
+			toks = append(toks, token{text: line[i:j], start: i, end: j})
+			i = j
+		case c == '.':
+			toks = append(toks, token{text: ".", start: i, end: i + 1})
+			i++
 		default:
-			b.WriteByte(c)
 			i++
 		}
 	}
-	return b.String(), triple
+	for k := 0; k+1 < len(toks); k++ {
+		toks[k].next = toks[k+1].text
+	}
+	return toks, triple
 }
 
 // mentionsIdentifier reports whether s contains name as a standalone token.
@@ -418,38 +451,13 @@ func isIdent(b byte) bool {
 	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
-// hashTree hashes paths and contents in a stable order.
-func hashTree(root string) (string, error) {
-	type file struct {
-		rel  string
-		data []byte
-	}
-	var files []file
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		files = append(files, file{filepath.ToSlash(rel), data})
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
-	h := sha256.New()
-	for _, f := range files {
-		fmt.Fprintf(h, "%s\x00%d\x00", f.rel, len(f.data))
-		h.Write(f.data)
-	}
-	return hex.EncodeToString(h.Sum(nil))[:hashLen], nil
+// identity is the suffix of a transitive route: derived from where the package
+// comes from, not from its bytes, so the name stays stable when the rewrite
+// rules evolve (D71). Eight characters, because it is a path element; the lock
+// carries the full commit.
+func identity(repo, commit string) string {
+	sum := sha256.Sum256([]byte(repo + "@" + commit))
+	return hex.EncodeToString(sum[:])[:hashLen]
 }
 
 // renameModule keeps the vendored manifest honest about the route it serves.

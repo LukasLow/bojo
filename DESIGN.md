@@ -534,6 +534,9 @@ Exit codes:
 | **D67** | import rewriting happens only in vendor copies, only in `.mojo`, only at statement start (`from <route>…` / `import <route>…`); anything else aborts the vendoring | best-effort rewriting | a half-rewritten copy of foreign code is worse than a hard error |
 | **D68** | the store (`host/owner/repo@tag-commit`, read-only, full repositories) and the vendor tree (derived, regenerable) are separate; `verify` checks the store only | one merged directory | the vendor copy differs from upstream by the rewrites; trust belongs to the store |
 | **D69** | `[pkg.<n>] exclude = [...]` filters files between store and vendor (`git archive <commit>:<subdir>`) | copy everything | a library should not ship its tests and docs into every consumer |
+| **D70** | every path element uses the **short** hash: 8 hex characters (cache `repo@<commit8>`, vendor `<route>_<hash8>`); the lock always carries the **full** 40-character commit | one length everywhere | a short form keeps paths readable and stays far below the collision risk; the lock is the authoritative record, so it must be exact |
+| **D71** | a transitive route's suffix is `sha256(repo@commit)[:8]`, not a content hash | hash the vendored bytes | the name must not move when the rewrite rules or `exclude` patterns change; provenance is the commit, and two different repositories cannot share it in practice |
+| **D72** | `import X` plus qualified use `X.f()` is supported and rewritten like `from X import …`; a bare mention that is neither aborts the vendoring | only rewrite `from` imports | Mojo accepts both forms (verified), so a rewrite that only handles `from` would produce silently broken copies |
 | **D61** | a package declares **one exact version**. `[repo.mojo] min`/`max` and every other range are removed | ranges for the toolchain version | Mojo has no compatibility promise between versions; a range would be a guess. One version is a fact, and `bojo doctor` can name the mismatch exactly |
 | **D62** | every manifest starts with `schema = 1` | no schema marker | a manifest is read by tools that will outlive this format; without a marker every future change is guesswork |
 | **D63** | the store path is `<host>/<owner>/<repo>@<tag>-<commit>` | `<hash>/<commit>`, or a `.git`-suffixed name | human-readable, unambiguous, and `.git` is not a legal delimiter: GitHub/GitLab strip it from URLs, so a repository effectively cannot carry it |
@@ -730,7 +733,7 @@ Settled in D61–D69. This section is normative for the layout.
 Complete repository checkouts, read-only, keyed by repository and snapshot:
 
 ```
-.bojo/cache/mojo/src/github.com/LukasLow/mojolib@v0.0.2-7c5c651/
+.bojo/cache/mojo/src/github.com/LukasLow/mojolib@7c5c6512/
 ```
 
 The unit is `(repo, tag, commit)` — a repository may publish several packages at
@@ -804,7 +807,19 @@ repo = "github.com/Markus/mojosocket"
 tag  = "v0.5"
 ```
 
-### 22.5 Manifests
+### 22.5 Shipping a package
+
+A published package always carries `bojo.pkg.toml` **and** `bojo.lock`. The lock
+records, for every dependency, where it came from and at which commit:
+
+```
+z  github.com/Markus/mojosocket  v0.5  9f8e7d6c4b3a...   git-tree:...
+```
+
+That is enough to reproduce the tree, and it is what makes a vendored copy
+explainable later: `vendor/vendor.json` points at the same identity.
+
+### 22.6 Manifests
 
 | File | Who writes it | Contains |
 |---|---|---|
@@ -814,7 +829,7 @@ tag  = "v0.5"
 
 Every manifest starts with `schema = 1` (D62). Versions are exact (D61).
 
-### 22.6 Open
+### 22.7 Open
 
 1. Should the vendor tree offer an optional symlink view (`pkgs/http/vendor/
    socket_a1b2c3d4`) purely for reading? Rejected for now: a second path that can

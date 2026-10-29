@@ -295,8 +295,8 @@ func isHexPrefix(s string) bool {
 }
 
 func short(sha string) string {
-	if len(sha) > 12 {
-		return sha[:12]
+	if len(sha) > 8 {
+		return sha[:8]
 	}
 	return sha
 }
