@@ -16,6 +16,12 @@ pointer: multi-version *switching* per project is already covered by
 
 ## P2 — Extraction cache for `onefile`
 
+**Status: done.** Unpacked once into `<cachedir>/bojo/run/<content-hash>/`;
+later starts `exec` straight there. Startup time is *not* a work item: a CLI
+that starts in a few milliseconds is fast enough, and every further
+optimisation (page-cache tricks, memfd, in-place mapping) buys milliseconds at
+the price of a second code path.
+
 **What.** Unpack the embedded libraries once into
 `<cachedir>/bojo/run/<content-hash>/`; later starts `exec` straight there.
 
@@ -254,6 +260,11 @@ top of the same pipeline and only becomes useful once builds are stable.
 ---
 
 ## P19 — Cache for bundled Python environments
+
+**Status: done (project-local).** A prepared environment lives in
+`.bojo/cache/python/<version>/<key>/` with `key` = hash of the sorted package
+set (D55). A second build with the same set reuses it without touching the
+network. A *machine-wide* cache stays open — see the precondition below.
 
 **What.** Build the relocatable CPython + wheels once per (version, package set)
 and reuse it, instead of re-provisioning for every project.

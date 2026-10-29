@@ -36,13 +36,29 @@ func New(projectDir string) *Store {
 // Root is the cache directory, useful for diagnostics.
 func (s *Store) Root() string { return s.root }
 
+// Mojo is the subtree for Mojo dependencies (git checkouts, module root and
+// the compiler cache). Python environments live next to it, under python/
+// (D55).
+func (s *Store) Mojo() string { return filepath.Join(s.root, "mojo") }
+
+// Modules is the materialised module root handed to -I.
+func (s *Store) Modules() string { return filepath.Join(s.Mojo(), "modules") }
+
+// Compiler is the compiler's own scratch cache (MODULAR_CACHE_DIR).
+func (s *Store) Compiler() string { return filepath.Join(s.Mojo(), "compiler") }
+
+// PythonEnv is the prepared environment for one (version, package set).
+func (s *Store) PythonEnv(version, key string) string {
+	return filepath.Join(s.root, "python", version, key)
+}
+
 // Src returns the checkout directory for one repository at one commit.
 func (s *Store) Src(repo, commit string) (string, error) {
 	norm, err := urlkey.Normalize(repo)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(s.root, "src", urlkey.Hash(norm), commit), nil
+	return filepath.Join(s.Mojo(), "src", urlkey.Hash(norm), commit), nil
 }
 
 // Tags lists the tags of a remote repository without cloning it.

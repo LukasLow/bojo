@@ -35,8 +35,9 @@ func Supported(version string) bool {
 	}
 }
 
-// Ensure downloads wheels, verifies they are wheels, installs them into a
-// project-local site-packages and scans for executable .pth files.
+// Ensure prepares the environment for one (version, package set) and caches it
+// under .bojo/cache/python/<version>/<key>/ (D55). A second project with the
+// same set reuses it without touching the network.
 func Ensure(projectDir, version string, packages map[string]string) (*Result, error) {
 	if !Supported(version) {
 		return nil, fmt.Errorf("python %s is outside the supported range 3.10–3.14", version)
@@ -44,16 +45,6 @@ func Ensure(projectDir, version string, packages map[string]string) (*Result, er
 	interpreter, ok := toolchain.PythonInstalled(version)
 	if !ok {
 		return nil, fmt.Errorf("python %s is not installed (run `bojo toolchain install python %s`)", version, version)
-	}
-
-	base := filepath.Join(projectDir, ".bojo", "python")
-	wheels := filepath.Join(base, "wheels")
-	site := filepath.Join(base, "site-packages")
-	if err := os.MkdirAll(wheels, 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(site, 0o755); err != nil {
-		return nil, err
 	}
 
 	specs := make([]string, 0, len(packages))
@@ -65,6 +56,38 @@ func Ensure(projectDir, version string, packages map[string]string) (*Result, er
 		specs = append(specs, name+"=="+ver)
 	}
 	sort.Strings(specs)
+
+	keySum := sha256.Sum256([]byte(strings.Join(specs, "\n")))
+	key := hex.EncodeToString(keySum[:4])
+	base := filepath.Join(projectDir, ".bojo", "cache", "python", version, key)
+	home := filepath.Join(base, "runtime")
+	site := filepath.Join(base, "site-packages")
+
+	if dirExists(home) && dirExists(site) {
+		return &Result{
+			Interpreter:  filepath.Join(home, "bin", "python3"),
+			PythonHome:   home,
+			SitePackages: site,
+			Hashes:       readHashes(base),
+		}, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(base), 0o755); err != nil {
+		return nil, err
+	}
+	tmp, err := os.MkdirTemp(filepath.Dir(base), ".python-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+
+	wheels := filepath.Join(tmp, "wheels")
+	siteTmp := filepath.Join(tmp, "site-packages")
+	for _, d := range []string{wheels, siteTmp} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, err
+		}
+	}
 
 	// 1. Download wheels only. An sdist is refused here, before anything runs.
 	args := append([]string{"-m", "pip", "download", "--only-binary=:all:", "--dest", wheels}, specs...)
@@ -87,7 +110,6 @@ func Ensure(projectDir, version string, packages map[string]string) (*Result, er
 			return nil, err
 		}
 		sum := sha256.Sum256(raw)
-		// "numpy-2.1.0-cp312-…whl" -> "numpy"
 		name := e.Name()
 		if i := strings.Index(name, "-"); i > 0 {
 			name = name[:i]
@@ -98,20 +120,44 @@ func Ensure(projectDir, version string, packages map[string]string) (*Result, er
 	// 3. Install from the local wheels, no index, no build isolation.
 	installArgs := append([]string{
 		"-m", "pip", "install", "--no-index", "--find-links", wheels,
-		"--only-binary=:all:", "--target", site, "--upgrade", "--quiet",
+		"--only-binary=:all:", "--target", siteTmp, "--upgrade", "--quiet",
 	}, specs...)
 	if out, err := run(interpreter, installArgs...); err != nil {
 		return nil, fmt.Errorf("installing into the bundled environment: %v: %s", err, tail(out))
 	}
 
 	// 4. A .pth file runs code at every interpreter start. Refuse it (D48).
-	if err := scanPth(site); err != nil {
+	if err := scanPth(siteTmp); err != nil {
+		return nil, err
+	}
+
+	// 5. Copy the interpreter next to the packages and strip it.
+	if err := copyRuntime(filepath.Dir(filepath.Dir(interpreter)), filepath.Join(tmp, "runtime")); err != nil {
+		return nil, err
+	}
+
+	if err := writeHashes(filepath.Join(tmp, "hashes.txt"), hashes); err != nil {
+		return nil, err
+	}
+	// The wheels are only needed to install; the hashes stay in the lock.
+	if err := os.RemoveAll(wheels); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, base); err != nil {
+		if dirExists(home) {
+			return &Result{
+				Interpreter:  filepath.Join(home, "bin", "python3"),
+				PythonHome:   home,
+				SitePackages: site,
+				Hashes:       hashes,
+			}, nil
+		}
 		return nil, err
 	}
 
 	return &Result{
-		Interpreter:  interpreter,
-		PythonHome:   filepath.Dir(filepath.Dir(interpreter)),
+		Interpreter:  filepath.Join(home, "bin", "python3"),
+		PythonHome:   home,
 		SitePackages: site,
 		Hashes:       hashes,
 	}, nil
@@ -152,7 +198,17 @@ func CopyTree(r *Result, outDir string) error {
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(r.PythonHome)
+	if err := copyDir(r.PythonHome, filepath.Join(dst, "runtime")); err != nil {
+		return err
+	}
+	return copyDir(r.SitePackages, filepath.Join(dst, "site-packages"))
+}
+
+// copyRuntime copies the interpreter (bin, lib, include) and leaves the data
+// directories behind: share/ holds terminfo and documentation, costs tens of
+// megabytes and contains self-referential links.
+func copyRuntime(srcHome, dst string) error {
+	entries, err := os.ReadDir(srcHome)
 	if err != nil {
 		return err
 	}
@@ -161,15 +217,44 @@ func CopyTree(r *Result, outDir string) error {
 		case "share", "doc", "man":
 			continue
 		}
-		if err := copyDir(filepath.Join(r.PythonHome, e.Name()),
-			filepath.Join(dst, "runtime", e.Name())); err != nil {
+		if err := copyDir(filepath.Join(srcHome, e.Name()), filepath.Join(dst, e.Name())); err != nil {
 			return err
 		}
 	}
-	if err := copyDir(r.SitePackages, filepath.Join(dst, "site-packages")); err != nil {
-		return err
+	return stripInterpreter(dst)
+}
+
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
+func writeHashes(path string, hashes map[string]string) error {
+	names := make([]string, 0, len(hashes))
+	for name := range hashes {
+		names = append(names, name)
 	}
-	return stripInterpreter(filepath.Join(dst, "runtime"))
+	sort.Strings(names)
+	var b strings.Builder
+	for _, name := range names {
+		b.WriteString(name + " " + hashes[name] + "\n")
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func readHashes(base string) map[string]string {
+	out := map[string]string{}
+	raw, err := os.ReadFile(filepath.Join(base, "hashes.txt"))
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 {
+			out[fields[0]] = fields[1]
+		}
+	}
+	return out
 }
 
 // stripInterpreter removes debug information from the interpreter only.

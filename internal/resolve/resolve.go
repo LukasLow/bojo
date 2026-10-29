@@ -263,7 +263,7 @@ func validateRoute(route string) (string, error) {
 
 // ModulesDir is where the import routes are materialised.
 func ModulesDir(projectDir string) string {
-	return filepath.Join(projectDir, ".bojo", "modules")
+	return filepath.Join(projectDir, ".bojo", "cache", "mojo", "modules")
 }
 
 // LockedCommits returns repo -> commit for the staleness check (D28).

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const stubSource = `
@@ -125,6 +126,24 @@ int main(int argc, char **argv) {
     setenv("LD_LIBRARY_PATH", path, 1);
 #endif
 
+    /* PYTHON-BEGIN */
+    snprintf(path, sizeof path, "%s/python/runtime", dir);
+    if (access(path, R_OK) == 0) {
+        setenv("PYTHONHOME", path, 1);
+        snprintf(path, sizeof path, "%s/python/site-packages", dir);
+        setenv("PYTHONPATH", path, 1);
+        const char *libs[] = {
+            "%s/python/runtime/lib/libpythonPYVER.so.1.0",
+            "%s/python/runtime/lib/libpythonPYVER.so",
+            "%s/python/runtime/lib/libpythonPYVER.dylib",
+        };
+        for (unsigned i = 0; i < sizeof libs / sizeof libs[0]; i++) {
+            snprintf(path, sizeof path, libs[i], dir);
+            if (access(path, R_OK) == 0) { setenv("MOJO_PYTHON_LIBRARY", path, 1); break; }
+        }
+    }
+    /* PYTHON-END */
+
     char app[4352];
     snprintf(app, sizeof app, "%s/app.bin", dir);
     execv(app, argv);
@@ -138,9 +157,10 @@ type entry struct {
 	data []byte
 }
 
-// Pack builds `outPath` from the binary and its library directory.
-func Pack(binaryPath, libDir, outPath string) error {
-	entries, err := collect(binaryPath, libDir)
+// Pack builds `outPath` from the binary plus the trees that must travel with
+// it. keys are payload paths ("lib", "python/runtime"), values are directories.
+func Pack(binaryPath, libDir string, trees map[string]string, pythonVersion, outPath string) error {
+	entries, err := collect(binaryPath, libDir, trees)
 	if err != nil {
 		return err
 	}
@@ -158,7 +178,7 @@ func Pack(binaryPath, libDir, outPath string) error {
 	sum := sha256.Sum256(payload)
 	hash := hex.EncodeToString(sum[:4])
 
-	stub, err := buildStub()
+	stub, err := buildStub(pythonVersion)
 	if err != nil {
 		return err
 	}
@@ -206,7 +226,7 @@ func Pack(binaryPath, libDir, outPath string) error {
 	return os.Rename(tmp, outPath)
 }
 
-func collect(binaryPath, libDir string) ([]entry, error) {
+func collect(binaryPath, libDir string, trees map[string]string) ([]entry, error) {
 	app, err := os.ReadFile(binaryPath)
 	if err != nil {
 		return nil, err
@@ -232,21 +252,62 @@ func collect(binaryPath, libDir string) ([]entry, error) {
 		}
 		entries = append(entries, entry{name: "lib/" + name, data: raw})
 	}
+
+	prefixes := make([]string, 0, len(trees))
+	for prefix := range trees {
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Strings(prefixes)
+	for _, prefix := range prefixes {
+		root := trees[prefix]
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, entry{name: prefix + "/" + filepath.ToSlash(rel), data: raw})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	return entries, nil
 }
 
 // buildStub compiles the launcher once per build with the host C compiler.
-func buildStub() (string, error) {
+func buildStub(pythonVersion string) (string, error) {
+	src := stubSource
+	if pythonVersion != "" {
+		src = strings.ReplaceAll(src, "PYVER", pythonVersion)
+	} else {
+		begin := strings.Index(src, "/* PYTHON-BEGIN */")
+		end := strings.Index(src, "/* PYTHON-END */")
+		if begin < 0 || end < 0 {
+			return "", fmt.Errorf("stub template lost its python markers")
+		}
+		src = src[:begin] + src[end+len("/* PYTHON-END */"):]
+	}
 	dir, err := os.MkdirTemp("", "bojo-stub-*")
 	if err != nil {
 		return "", err
 	}
-	src := filepath.Join(dir, "stub.c")
-	if err := os.WriteFile(src, []byte(stubSource), 0o644); err != nil {
+	src2 := filepath.Join(dir, "stub.c")
+	if err := os.WriteFile(src2, []byte(src), 0o644); err != nil {
 		return "", err
 	}
 	out := filepath.Join(dir, "stub")
-	cmd := exec.Command("cc", "-O2", "-o", out, src)
+	cmd := exec.Command("cc", "-O2", "-o", out, src2)
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("compiling the launcher: %v: %s", err, string(combined))
 	}

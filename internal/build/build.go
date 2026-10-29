@@ -256,7 +256,7 @@ func BinaryPath(projectDir, name string) string {
 }
 
 // Mojo builds entry into out with the given mojo binary.
-func Mojo(mojoBin, projectDir, entry, out, modulesDir string, extra []string) error {
+func Mojo(mojoBin, projectDir, entry, out, modulesDir, compilerDir string, extra []string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
@@ -268,7 +268,7 @@ func Mojo(mojoBin, projectDir, entry, out, modulesDir string, extra []string) er
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(),
-		"MODULAR_CACHE_DIR="+filepath.Join(projectDir, ".bojo", "mojo-cache"),
+		"MODULAR_CACHE_DIR="+compilerDir,
 	)
 	return cmd.Run()
 }

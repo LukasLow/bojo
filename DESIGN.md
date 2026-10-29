@@ -299,7 +299,7 @@ project/.bojo/modules/
 | # | Step | Failure |
 |---|---|---|
 | 1 | Load and validate `bojo.toml` | exit 1 |
-| 2 | Resolve; fetch missing repos into `.bojo/cache/src`, verify the tree OID | exit 4 |
+| 2 | Resolve; fetch missing repos into `.bojo/cache/mojo/src`, verify the tree OID | exit 4 |
 | 3 | `--locked`: compare lock against resolution | exit 5 |
 | 4 | Take the project lock; swap `.bojo/modules` | exit 1 |
 | 5 | Check hooks (§12). Missing approval → **abort, execute nothing** | exit 2 |
@@ -525,6 +525,8 @@ Exit codes:
 | **D51** | the launcher sets `MOJO_PYTHON_LIBRARY` (absolute `libpython` path) in addition to `PYTHONHOME`/`PYTHONPATH` | rely on `PATH` discovery | research shows `MOJO_PYTHON_LIBRARY` is the primary lookup; a wrong `LIBDIR` ends in `dlopen("")` |
 | **D52** | the runtime closure is copied to `.out/lib`, and the relative RPATH (`$ORIGIN/lib`, `@loader_path/lib`) is passed **at link time** | rewrite the RPATH afterwards | Mojo only passes `-Xlinker`; a relative entry can be appended, a `patchelf` step would be an extra dependency |
 | **D53** | `onefile` compiles a **C stub at build time** with the host `cc` and appends `app.bin` + `lib/*` plus a 24-byte trailer | embed a prebuilt stub, or require Go at runtime | Mojo already needs a C driver, so no new dependency; the stub sets `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` and execs |
+| **D55** | the cache is split into `.bojo/cache/mojo/` (git checkouts, module root, compiler cache) and `.bojo/cache/python/<version>/<key>/` (interpreter + site-packages, key = hash of the sorted package set) | one flat cache directory | each language keeps its own invalidation rule; the python key is independent of commit and flags |
+| **D56** | `onefile` carries the python environment, and the stub sets `PYTHONHOME`, `PYTHONPATH` and `MOJO_PYTHON_LIBRARY` after extraction | bundle python only in `dir` mode | otherwise a self-contained binary that uses numpy is impossible; measured 205 MB extracted |
 | **D54** | with `[version] python`, the build emits `.out/<name>` (C launcher) + `.out/<name>.bin` + `.out/python/{runtime,site-packages}` | symlink to the toolchain store | the launcher sets `PYTHONHOME`, `PYTHONPATH`, `MOJO_PYTHON_LIBRARY`; the store must not be required at runtime |
 
 ## 21. Runtime requirements (verified)

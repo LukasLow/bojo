@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 
 	"github.com/LukasLow/bojo/internal/build"
+	"github.com/LukasLow/bojo/internal/cache"
 	"github.com/LukasLow/bojo/internal/hooks"
 	"github.com/LukasLow/bojo/internal/manifest"
 	"github.com/LukasLow/bojo/internal/onefile"
+	"github.com/LukasLow/bojo/internal/pyenv"
 	"github.com/LukasLow/bojo/internal/resolve"
 )
 
@@ -49,7 +51,7 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 	}
 	payload := filepath.Join(work, cfg.Project.Name)
 	args := append(build.LinkerArgs(g), build.RuntimeRPATH()...)
-	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, payload, modulesDir, args); err != nil {
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, payload, modulesDir, cache.New(dir).Compiler(), args); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
@@ -61,8 +63,19 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 		return exitBuild
 	}
 
+	trees := map[string]string{"lib": filepath.Join(work, "lib")}
+	if cfg.Version.Python != "" {
+		env, err := pyenv.Ensure(dir, cfg.Version.Python, cfg.Deps.Python)
+		if err != nil {
+			fail(err)
+			return exitUsage
+		}
+		trees["python/runtime"] = env.PythonHome
+		trees["python/site-packages"] = env.SitePackages
+	}
+
 	final := build.BinaryPath(dir, cfg.Project.Name)
-	if err := onefile.Pack(payload, filepath.Join(work, "lib"), final); err != nil {
+	if err := onefile.Pack(payload, filepath.Join(work, "lib"), trees, cfg.Version.Python, final); err != nil {
 		fail(err)
 		return exitBuild
 	}
