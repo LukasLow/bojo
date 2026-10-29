@@ -576,6 +576,17 @@ func cmdVendor(args []string) int {
 	return exitOK
 }
 
+// packageByShortName finds a package by its declared name, since the graph is
+// keyed by module path (D65).
+func packageByShortName(g *resolve.Graph, name string) (*resolve.Package, bool) {
+	for _, p := range g.Packages {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
 func cmdBuild(args []string) int {
 	locked := false
 	for _, a := range args {
@@ -806,7 +817,10 @@ func cmdWhy(args []string) int {
 	if code != exitOK {
 		return code
 	}
-	p, ok := g.Packages[args[0]]
+	p, ok := packageByShortName(g, args[0])
+	if !ok {
+		p, ok = g.Packages[args[0]]
+	}
 	if !ok {
 		fail(fmt.Errorf("package %q is not part of this build (see `bojo tree`)", args[0]))
 		return exitUsage
@@ -959,7 +973,7 @@ libs = [%q]
 		return resolveExit(err)
 	}
 
-	p, ok := g.Packages[spec.pkg]
+	p, ok := packageByShortName(g, spec.pkg)
 	if !ok {
 		fail(fmt.Errorf("package %q not found", spec.pkg))
 		return exitUsage
@@ -985,7 +999,11 @@ libs = [%q]
 		return code
 	}
 
-	modulesDir, err := build.Materialize(tmp, g.Routes)
+	if _, err := vendor.Build(tmp, g); err != nil {
+		fail(err)
+		return exitUsage
+	}
+	modulesDir := ""
 	if err != nil {
 		fail(err)
 		return exitBuild
@@ -1001,7 +1019,7 @@ libs = [%q]
 		fail(err)
 		return exitUsage
 	}
-	if err := build.Mojo(mojoBin, p.Dir, entry, out, modulesDir, cache.New(p.Dir).Compiler(), nil, build.LinkerArgs(g, p.Dir, nil, nil)); err != nil {
+	if err := build.Mojo(mojoBin, p.Dir, entry, out, modulesDir, cache.New(p.Dir).Compiler(), vendor.Roots(tmp), build.LinkerArgs(g, p.Dir, nil, nil)); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
