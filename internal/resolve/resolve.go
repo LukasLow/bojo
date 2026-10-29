@@ -295,7 +295,7 @@ func (g *Graph) add(p Package, alias map[string]string) error {
 	}
 
 	g.Lock = append(g.Lock, LockEntry{
-		Name: p.Name, Repo: p.Repo, Tag: p.Tag, Commit: p.Commit,
+		Name: p.Path, Repo: p.Repo, Tag: p.Tag, Commit: p.Commit,
 		Tree: "git-tree:" + p.Tree, Alias: alias[p.Name],
 	})
 	return nil

@@ -32,7 +32,7 @@ measured), no static linking (Mojo cannot), no automatic hooks.
 |---|---|---|
 | `bojo.toml` | what this project needs (schema 1) | yes |
 | `bojo.pkg.toml` | repository root: `import = [...]`; per package: `[pkg.<name>]` | yes |
-| `bojo.lock` | every dependency with repo, tag, full commit, tree | yes |
+| `bojo.lock` | every dependency by module path, with repo, tag, full commit, tree | yes |
 | `bojo.allow` | approved hooks (JSONL) | yes |
 | `.vendor/` | generated module root, one directory per module path | **no** |
 | `.bojo/` | cache, toolchains lock, build state | **no** |
@@ -73,6 +73,7 @@ bojo init                        create a project
 bojo get <url>@<version>         add a dependency (--as <name> on a collision)
 bojo remove <pkg>                remove one
 bojo update [pkg]                re-resolve and write bojo.lock
+bojo vendor [--check]            write or verify .vendor
 bojo build [--locked]            build into .out/
 bojo run <url>@<version>         ephemeral build and run a remote command
 bojo install <url>@<version>     ephemeral build -> ~/.bojo/bin
@@ -96,7 +97,7 @@ Exit codes an agent must react to:
 | 2 | blocked by a missing hook approval, **nothing ran** | show the user the proposal; never approve it yourself |
 | 3 | build or link failure | `bojo doctor`, then the build log |
 | 4 | network or clone failure | retry |
-| 5 | lock conflict (`--locked`) | suggest `bojo update`; do not run it yourself |
+| 5 | lock or vendor conflict (`--locked`, `vendor --check`) | suggest `bojo update` / `bojo vendor`; do not run it yourself |
 
 ## Adding a dependency
 

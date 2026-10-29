@@ -88,6 +88,8 @@ func run(args []string) int {
 		return cmdRun(args[1:], true)
 	case "cache":
 		return cmdCache(args[1:])
+	case "vendor":
+		return cmdVendor(args[1:])
 	case "clean":
 		return cmdClean(args[1:])
 	case "help", "--help", "-h":
@@ -540,6 +542,39 @@ func cmdUpdate(args []string) int {
 
 // ---------------------------------------------------------------------------
 // build
+
+// cmdVendor materialises .vendor from the graph, or checks it (--check).
+func cmdVendor(args []string) int {
+	check := false
+	for _, a := range args {
+		switch a {
+		case "--check":
+			check = true
+		default:
+			fail(fmt.Errorf("unknown flag %q", a))
+			return exitUsage
+		}
+	}
+	dir, g, code := resolveProject()
+	if code != exitOK {
+		return code
+	}
+	if check {
+		if err := vendor.Compare(dir, g); err != nil {
+			fail(err)
+			return exitLockFile
+		}
+		fmt.Println("ok: .vendor matches the graph")
+		return exitOK
+	}
+	m, err := vendor.Build(dir, g)
+	if err != nil {
+		fail(err)
+		return exitBuild
+	}
+	fmt.Printf("ok: %d package(s) in .vendor\n", len(m.Entries))
+	return exitOK
+}
 
 func cmdBuild(args []string) int {
 	locked := false

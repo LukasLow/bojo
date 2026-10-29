@@ -52,6 +52,64 @@ func Roots(projectDir string) []string {
 	return []string{filepath.Join(projectDir, Dir)}
 }
 
+// Plan lists what Build would produce, without touching the disk.
+func Plan(g *resolve.Graph) (Manifest, error) {
+	paths := make([]string, 0, len(g.Packages))
+	for p := range g.Packages {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	entries := make([]Entry, 0, len(paths))
+	seen := map[string]string{}
+	for _, key := range paths {
+		p := g.Packages[key]
+		if prev, ok := seen[p.Path]; ok && prev != p.Commit {
+			return Manifest{}, fmt.Errorf("%s is required at two commits: %s… and %s…", p.Path, prev[:8], p.Commit[:8])
+		}
+		seen[p.Path] = p.Commit
+		entries = append(entries, Entry{
+			Path: p.Path, Dir: strings.ReplaceAll(p.Path, ".", "/"), Pkg: p.Name,
+			Repo: p.Repo, Tag: p.Tag, Commit: p.Commit, Alias: p.Alias,
+		})
+	}
+	return Manifest{Schema: 1, Entries: entries}, nil
+}
+
+// Compare reports whether the vendored tree still matches the graph.
+func Compare(projectDir string, g *resolve.Graph) error {
+	want, err := Plan(g)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(projectDir, Dir, ManifestName))
+	if err != nil {
+		return fmt.Errorf(".vendor is missing (run `bojo vendor`)")
+	}
+	var have Manifest
+	if err := json.Unmarshal(raw, &have); err != nil {
+		return fmt.Errorf(".vendor/.vendor.json is unreadable: %w", err)
+	}
+	index := map[string]Entry{}
+	for _, e := range have.Entries {
+		index[e.Path] = e
+	}
+	for _, w := range want.Entries {
+		h, ok := index[w.Path]
+		if !ok {
+			return fmt.Errorf("%s is missing from .vendor (run `bojo vendor`)", w.Path)
+		}
+		if h.Commit != w.Commit {
+			return fmt.Errorf("%s is at %s…, the graph wants %s… (run `bojo vendor`)", w.Path, h.Commit[:8], w.Commit[:8])
+		}
+		delete(index, w.Path)
+	}
+	for path := range index {
+		return fmt.Errorf("%s is vendored but no longer required (run `bojo vendor`)", path)
+	}
+	return nil
+}
+
 // Build writes the vendor tree for a resolved graph.
 func Build(projectDir string, g *resolve.Graph) (*Manifest, error) {
 	tmp, err := os.MkdirTemp(projectDir, ".vendor-tmp-*")
