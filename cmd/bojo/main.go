@@ -1,11 +1,12 @@
 // Command bojo is a package manager and build driver for Mojo.
 //
-// This file is the thin CLI shell: it parses arguments, prints messages in the
-// style the specification prescribes (one fact per line, complete sentences,
-// distinct exit codes) and delegates to internal packages.
+// The CLI shell stays thin: it parses arguments, prints messages in the shape
+// the specification prescribes (one fact per line, complete sentences, distinct
+// exit codes) and delegates to the internal packages.
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,42 +15,43 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/LukasLow/bojo/internal/build"
+	"github.com/LukasLow/bojo/internal/cache"
+	"github.com/LukasLow/bojo/internal/hooks"
+	"github.com/LukasLow/bojo/internal/lock"
 	"github.com/LukasLow/bojo/internal/manifest"
+	"github.com/LukasLow/bojo/internal/resolve"
 	"github.com/LukasLow/bojo/skill"
 )
 
 const version = "0.1.0-dev"
 
-// Exit codes are part of the contract; agents branch on them.
 const (
 	exitOK       = 0
 	exitUsage    = 1
-	exitBlocked  = 2 // hook approval missing; nothing was executed
+	exitBlocked  = 2
 	exitBuild    = 3
 	exitNetwork  = 4
 	exitLockFile = 5
 )
 
-func main() {
-	os.Exit(run(os.Args[1:]))
-}
+func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
 		return exitUsage
 	}
-
 	switch args[0] {
 	case "version", "--version", "-v":
 		fmt.Printf("bojo %s\n", version)
 		return exitOK
 	case "skill":
-		runtime := ""
+		runtimeName := ""
 		if len(args) > 1 {
-			runtime = args[1]
+			runtimeName = args[1]
 		}
-		text, err := skill.Text(runtime)
+		text, err := skill.Text(runtimeName)
 		if err != nil {
 			fail(err)
 			return exitUsage
@@ -60,12 +62,28 @@ func run(args []string) int {
 		return cmdDoctor()
 	case "init", "new":
 		return cmdInit(args[1:])
+	case "get":
+		return cmdGet(args[1:])
+	case "update":
+		return cmdUpdate(args[1:])
 	case "build":
 		return cmdBuild(args[1:])
-	case "clean":
-		return cmdClean(args[1:])
+	case "tree":
+		return cmdTree()
+	case "why":
+		return cmdWhy(args[1:])
+	case "allow":
+		return cmdAllow(args[1:])
+	case "verify":
+		return cmdVerify()
+	case "run":
+		return cmdRun(args[1:], false)
+	case "install":
+		return cmdRun(args[1:], true)
 	case "cache":
 		return cmdCache(args[1:])
+	case "clean":
+		return cmdClean(args[1:])
 	case "help", "--help", "-h":
 		usage()
 		return exitOK
@@ -80,35 +98,41 @@ func usage() {
 	fmt.Print(`bojo — package manager and build driver for Mojo
 
 Usage:
-  bojo init                     create a project
-  bojo build [--locked]         build into out/
-  bojo run <url>#<pkg>@<ver>    build and run a remote command (not yet)
-  bojo install <url>#<pkg>@<ver> install a remote command (not yet)
-  bojo get <url>#<pkg>@<ver>    add a dependency (not yet)
-  bojo tree | why               dependency graph (not yet)
-  bojo allow <id> | --list      approve or list hooks (not yet)
-  bojo verify                   verify the lock (not yet)
-  bojo doctor                   check toolchain, compiler and PATH
-  bojo cache list | clear       inspect or clear .bojo/cache
-  bojo clean [--all]            remove .bojo/ (--all: also out/)
+  bojo init                       create a project
+  bojo get <url>#<pkg>@<ver>      add a dependency (--as <name> on a collision)
+  bojo update                     resolve and write bojo.lock
+  bojo build [--locked]           build into out/
+  bojo run <url>#<pkg>@<ver>      ephemeral build and run a remote command
+  bojo install <url>#<pkg>@<ver>  ephemeral build, binary to ~/.bojo/bin
+  bojo tree                       print the resolved graph
+  bojo why <pkg>                  explain where a package comes from
+  bojo allow <id>|--list          approve or list hooks
+  bojo verify                     verify the lock against fresh checkouts
+  bojo doctor                     check toolchain, compiler and PATH
+  bojo cache list|clear           inspect or clear .bojo/cache
+  bojo clean [--all]              remove .bojo/ (--all: also out/)
   bojo skill [claude|codex|opencode]
-                                print the agent skill as markdown
-  bojo version                  print the version
+                                  print the agent skill as markdown
+  bojo version                    print the version
 `)
 }
 
-func fail(err error) {
-	fmt.Fprintf(os.Stderr, "bojo: %v\n", err)
+func fail(err error) { fmt.Fprintf(os.Stderr, "bojo: %v\n", err) }
+
+// resolveExit maps a resolution failure: remote problems are exit 4, anything
+// else (bad manifest, unknown package, cycle) is a configuration error, exit 1.
+func resolveExit(err error) int {
+	var fe *cache.FetchError
+	if errors.As(err, &fe) {
+		return exitNetwork
+	}
+	return exitUsage
 }
 
-// projectRoot returns the working directory, which is where bojo.toml lives.
-func projectRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+func projectRoot() (string, error) { return os.Getwd() }
+
+// ---------------------------------------------------------------------------
+// init / doctor / clean / cache
 
 func cmdInit(args []string) int {
 	dir, err := projectRoot()
@@ -117,34 +141,31 @@ func cmdInit(args []string) int {
 		return exitUsage
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bojo.toml")); err == nil {
-		fail(fmt.Errorf("bojo.toml already exists in %s", dir))
+		fail(errors.New("bojo.toml already exists in this directory"))
 		return exitUsage
 	}
-
 	name := filepath.Base(dir)
 	if len(args) > 0 {
 		name = args[0]
 	}
 
-	manifest := fmt.Sprintf(`[project]
+	cfg := fmt.Sprintf(`[project]
 name    = %q
 version = "0.1.0"
 entry   = "main.mojo"
 
 [toolchain]
-mojo   = "%s"
-target = "%s"
+mojo   = %q
+target = %q
 
 [build]
 output = "dir"
 strip  = true
 `, name, mojoVersionOr("1.2.0"), hostTarget())
 
-	mainMojo := `def main():
-    print("hello from bojo")
-`
+	mainMojo := "def main():\n    print(\"hello from bojo\")\n"
 
-	if err := os.WriteFile(filepath.Join(dir, "bojo.toml"), []byte(manifest), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "bojo.toml"), []byte(cfg), 0o644); err != nil {
 		fail(err)
 		return exitUsage
 	}
@@ -161,6 +182,217 @@ strip  = true
 	fmt.Println("next: bojo build")
 	return exitOK
 }
+
+func cmdDoctor() int {
+	fmt.Printf("bojo %s\n\n", version)
+	problems := 0
+	problems += check("mojo", "--version")
+	problems += check("cc", "--version")
+	problems += check("git", "--version")
+
+	if out, err := exec.Command("mojo", "--version").Output(); err == nil {
+		fmt.Printf("  %-11s fingerprint %s\n", "toolchain", fingerprint(string(out)))
+	}
+	binDir := filepath.Join(os.Getenv("HOME"), ".bojo", "bin")
+	if !pathContains(binDir) {
+		fmt.Printf("  %-11s not in PATH\n", "PATH")
+		fmt.Printf("              export PATH=\"%s:$PATH\"\n", binDir)
+	}
+
+	fmt.Println()
+	if problems > 0 {
+		fmt.Printf("%d problem(s) found.\n", problems)
+		return exitUsage
+	}
+	fmt.Println("all checks passed.")
+	return exitOK
+}
+
+func check(name, arg string) int {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		fmt.Printf("  %-11s missing — required to build\n", name)
+		return 1
+	}
+	out, err := exec.Command(path, arg).Output()
+	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if err != nil || line == "" {
+		fmt.Printf("  %-11s found at %s (version unknown)\n", name, path)
+		return 0
+	}
+	fmt.Printf("  %-11s %s\n", name, line)
+	return 0
+}
+
+func cmdClean(args []string) int {
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	all := false
+	for _, a := range args {
+		switch a {
+		case "--all":
+			all = true
+		default:
+			fail(fmt.Errorf("unknown flag %q", a))
+			return exitUsage
+		}
+	}
+	removed := 0
+	if ok, err := removeIfExists(filepath.Join(dir, ".bojo")); err != nil {
+		fail(err)
+		return exitUsage
+	} else if ok {
+		fmt.Println("removed .bojo/")
+		removed++
+	}
+	if all {
+		if ok, err := removeIfExists(filepath.Join(dir, "out")); err != nil {
+			fail(err)
+			return exitUsage
+		} else if ok {
+			fmt.Println("removed out/")
+			removed++
+		}
+	}
+	if removed == 0 {
+		fmt.Println("nothing to clean")
+	}
+	return exitOK
+}
+
+func cmdCache(args []string) int {
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	cacheDir := filepath.Join(dir, ".bojo", "cache")
+	if len(args) == 0 {
+		fail(errors.New("usage: bojo cache list|clear"))
+		return exitUsage
+	}
+	switch args[0] {
+	case "list":
+		entries, err := os.ReadDir(filepath.Join(cacheDir, "src"))
+		if err != nil {
+			fmt.Println("cache is empty")
+			return exitOK
+		}
+		for _, e := range entries {
+			fmt.Printf("  %s\n", e.Name())
+		}
+		fmt.Printf("%d repository/ies cached\n", len(entries))
+		return exitOK
+	case "clear":
+		if ok, err := removeIfExists(cacheDir); err != nil {
+			fail(err)
+			return exitUsage
+		} else if ok {
+			fmt.Println("cache cleared")
+		} else {
+			fmt.Println("cache is already empty")
+		}
+		return exitOK
+	default:
+		fail(fmt.Errorf("unknown cache command %q (list|clear)", args[0]))
+		return exitUsage
+	}
+}
+
+// ---------------------------------------------------------------------------
+// get / update
+
+func cmdGet(args []string) int {
+	if len(args) == 0 {
+		fail(errors.New("usage: bojo get <url>#<pkg>@<version> [--as <name>]"))
+		return exitUsage
+	}
+	spec, err := parseSpec(args[0])
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	aliasName := ""
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--as" && i+1 < len(args) {
+			aliasName = args[i+1]
+			i++
+			continue
+		}
+		fail(fmt.Errorf("unknown argument %q", args[i]))
+		return exitUsage
+	}
+
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	cfg, err := manifest.Load(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	for _, d := range cfg.DepsFrom {
+		if d.Repo == spec.repo && d.Tag == spec.pkg+"/"+spec.version {
+			for _, l := range d.Libs {
+				if l == spec.pkg {
+					fmt.Printf("already declared: %s@%s\n", spec.pkg, spec.version)
+					return exitOK
+				}
+			}
+		}
+	}
+
+	if err := appendDepFrom(dir, spec, aliasName); err != nil {
+		fail(err)
+		return exitUsage
+	}
+	fmt.Printf("added %s@%s from %s\n", spec.pkg, spec.version, spec.repo)
+	fmt.Println("next: bojo update")
+	return exitOK
+}
+
+func cmdUpdate(args []string) int {
+	if len(args) > 0 {
+		fail(fmt.Errorf("unknown argument %q", args[0]))
+		return exitUsage
+	}
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	cfg, err := manifest.Load(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	lf, _ := lock.Load(dir)
+
+	store := cache.New(dir)
+	r := &resolve.Resolver{Store: store, Locked: lf.Trees()}
+	g, err := r.Resolve(cfg)
+	if err != nil {
+		fail(err)
+		return resolveExit(err)
+	}
+	if err := writeLock(dir, lf.Mojo, g); err != nil {
+		fail(err)
+		return exitUsage
+	}
+	fmt.Printf("resolved %d package(s)\n", len(g.Packages))
+	if len(g.Hooks) > 0 {
+		fmt.Printf("%d hook(s) will need approval before they run\n", len(g.Hooks))
+	}
+	return exitOK
+}
+
+// ---------------------------------------------------------------------------
+// build
 
 func cmdBuild(args []string) int {
 	locked := false
@@ -179,109 +411,469 @@ func cmdBuild(args []string) int {
 		fail(err)
 		return exitUsage
 	}
-	m, err := manifest.Load(dir)
+	cfg, err := manifest.Load(dir)
 	if err != nil {
 		fail(err)
 		return exitUsage
 	}
-
-	if locked {
-		if _, err := os.Stat(filepath.Join(dir, "bojo.lock")); err != nil {
-			fail(errors.New("--locked given but bojo.lock does not exist (run `bojo update`)"))
-			return exitLockFile
-		}
-	}
-	if len(m.Deps) > 0 || len(m.DepsFrom) > 0 {
-		fail(errors.New("dependency resolution is not implemented in this build; remove deps or wait for `bojo get`"))
-		return exitUsage
-	}
-
-	modules := filepath.Join(dir, ".bojo", "modules")
-	if err := os.MkdirAll(modules, 0o755); err != nil {
+	lf, err := lock.Load(dir)
+	if err != nil {
 		fail(err)
 		return exitUsage
 	}
-	outDir := filepath.Join(dir, "out")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if locked && len(lf.Packages) == 0 && (len(cfg.DepsFrom) > 0 || len(cfg.Deps) > 0) {
+		fail(errors.New("--locked given but bojo.lock has no packages (run `bojo update`)"))
+		return exitLockFile
+	}
+
+	store := cache.New(dir)
+	r := &resolve.Resolver{Store: store, Locked: lf.Trees()}
+	g, err := r.Resolve(cfg)
+	if err != nil {
+		fail(err)
+		return resolveExit(err)
+	}
+
+	allow, err := hooks.Load(dir)
+	if err != nil {
 		fail(err)
 		return exitUsage
 	}
-
-	binary := m.Project.Name
-	if m.Build.Output == "onefile" {
-		fmt.Println("note: output = \"onefile\" is not implemented yet; writing a directory build")
+	if code := gate(dir, allow, g); code != exitOK {
+		return code
 	}
-	out := filepath.Join(outDir, binary)
-
-	mojoArgs := []string{
-		"build", m.Project.Entry,
-		"-I", modules,
-		"-I", ".",
-		"-o", out,
+	for _, e := range allow.Stale(g.LockedCommits()) {
+		fmt.Printf("note: ignoring stale approval %s for %s@%s (not in the lock)\n", e.ID(), e.Pkg, shortSHA(e.Commit))
 	}
-	fmt.Printf("building %s\n", m.Project.Entry)
-	cmd := exec.Command("mojo", mojoArgs...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "MODULAR_CACHE_DIR="+filepath.Join(dir, ".bojo", "mojo-cache"))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			fail(fmt.Errorf("mojo build failed (exit %d); run `bojo doctor`", ee.ExitCode()))
-			return exitBuild
-		}
+	for _, hook := range g.Hooks {
+		fmt.Printf("running approved hook: %s %s (%s)\n", hook.Pkg, hook.Hook, strings.Join(hook.Command, " "))
+	}
+
+	modulesDir, err := build.Materialize(dir, g.Routes)
+	if err != nil {
 		fail(err)
 		return exitBuild
 	}
-
+	out := build.BinaryPath(dir, cfg.Project.Name)
+	if err := build.Mojo(dir, cfg.Project.Entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
+		fail(fmt.Errorf("mojo build failed: %w", err))
+		return exitBuild
+	}
+	if cfg.Build.Strip {
+		_ = build.Strip(out)
+	}
 	fmt.Printf("ok: %s\n", out)
 	return exitOK
 }
 
-func cmdDoctor() int {
-	fmt.Printf("bojo %s\n", version)
-	fmt.Println()
-
-	problems := 0
-	problems += check("mojo", "version")
-	problems += check("cc", "--version")
-	problems += check("git", "--version")
-
-	if path, err := exec.LookPath("mojo"); err == nil {
-		fmt.Printf("  mojo path   %s\n", path)
+// gate prints every unapproved hook and returns exit 2 when something is
+// blocked. It executes nothing (DESIGN §12.2).
+func gate(projectDir string, allow *hooks.Store, g *resolve.Graph) int {
+	blocked := hooks.Blocked(allow, g.Hooks)
+	if len(blocked) == 0 {
+		_ = os.Remove(filepath.Join(projectDir, ".bojo", "pending.json"))
+		return exitOK
 	}
 
-	binDir := filepath.Join(os.Getenv("HOME"), ".bojo", "bin")
-	if !pathContains(binDir) {
-		fmt.Printf("  PATH        %s is not in PATH\n", binDir)
-		fmt.Printf("              export PATH=\"%s:$PATH\"\n", binDir)
+	var entries []hooks.Entry
+	for _, r := range blocked {
+		e := r.Entry()
+		entries = append(entries, e)
+		fmt.Printf("blocked: pkg %q wants to run a hook\n", r.Pkg)
+		fmt.Printf("  repo     %s\n", r.Repo)
+		fmt.Printf("  commit   %s\n", shortSHA(r.Commit))
+		fmt.Printf("  pkg      %s\n", r.Pkg)
+		fmt.Printf("  hook     %s\n", r.Hook)
+		fmt.Printf("  command  %s\n", strings.Join(r.Command, " "))
+		if e.Binary != "" {
+			fmt.Printf("  binary   %s\n", e.Binary)
+		}
+		fmt.Println()
+		fmt.Printf("Not run. Inspect the repo and the command above, then approve with:\n\n  bojo allow %s\n\n", e.ID())
 	}
+	_ = writePending(projectDir, entries)
+	fmt.Printf("Blocked by %d hook(s). Nothing was executed.\n", len(blocked))
+	return exitBlocked
+}
 
-	fmt.Println()
-	if problems > 0 {
-		fmt.Printf("%d problem(s) found.\n", problems)
-		return exitUsage
+// ---------------------------------------------------------------------------
+// tree / why / verify / allow
+
+func cmdTree() int {
+	dir, g, code := resolveProject()
+	if code != exitOK {
+		return code
 	}
-	fmt.Println("all checks passed.")
+	_ = dir
+	for _, name := range sortedNames(g) {
+		p := g.Packages[name]
+		fmt.Printf("%s  %s@%s\n", name, p.Repo, shortSHA(p.Commit))
+		for _, r := range p.Routes {
+			fmt.Printf("  route %s\n", r)
+		}
+		if len(p.Linker.Libs) > 0 {
+			fmt.Printf("  linker -l%s\n", strings.Join(p.Linker.Libs, " -l"))
+		}
+	}
 	return exitOK
 }
 
-// check runs `<name> <arg>` and prints a single line with the first output line.
-func check(name, arg string) int {
-	path, err := exec.LookPath(name)
+func cmdWhy(args []string) int {
+	if len(args) != 1 {
+		fail(errors.New("usage: bojo why <pkg>"))
+		return exitUsage
+	}
+	_, g, code := resolveProject()
+	if code != exitOK {
+		return code
+	}
+	p, ok := g.Packages[args[0]]
+	if !ok {
+		fail(fmt.Errorf("package %q is not part of this build (see `bojo tree`)", args[0]))
+		return exitUsage
+	}
+	fmt.Printf("%s\n", p.Name)
+	fmt.Printf("  repo    %s\n", p.Repo)
+	fmt.Printf("  commit  %s\n", p.Commit)
+	fmt.Printf("  dir     %s\n", p.Dir)
+	for _, r := range p.Routes {
+		fmt.Printf("  route   %s\n", r)
+	}
+	return exitOK
+}
+
+func cmdVerify() int {
+	dir, err := projectRoot()
 	if err != nil {
-		fmt.Printf("  %-11s missing — required to build\n", name)
-		return 1
+		fail(err)
+		return exitUsage
 	}
-	out, err := exec.Command(path, arg).Output()
-	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	if err != nil || line == "" {
-		fmt.Printf("  %-11s found at %s (version unknown)\n", name, path)
-		return 0
+	lf, err := lock.Load(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
 	}
-	fmt.Printf("  %-11s %s\n", name, line)
-	return 0
+	if len(lf.Packages) == 0 {
+		fmt.Println("lock is empty")
+		return exitOK
+	}
+	store := cache.New(dir)
+	bad := 0
+	for _, e := range lf.Packages {
+		if strings.HasPrefix(e.Commit, "path:") {
+			fmt.Printf("  skip    %s (local path dependency)\n", e.Name)
+			continue
+		}
+		if _, err := store.Ensure(e.Repo, e.Commit, e.Tree); err != nil {
+			fmt.Printf("  FAILED  %s: %v\n", e.Name, err)
+			bad++
+			continue
+		}
+		fmt.Printf("  ok      %s %s\n", e.Name, shortSHA(e.Commit))
+	}
+	if bad > 0 {
+		fmt.Printf("%d package(s) failed verification\n", bad)
+		return exitUsage
+	}
+	fmt.Println("lock verified")
+	return exitOK
+}
+
+func cmdAllow(args []string) int {
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	allow, err := hooks.Load(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	if len(args) == 0 || args[0] == "--list" {
+		if len(allow.Entries) == 0 {
+			fmt.Println("no approvals")
+			return exitOK
+		}
+		for _, e := range allow.Entries {
+			fmt.Printf("%s  %s %s  %s\n", e.ID(), e.Pkg, e.Hook, strings.Join(e.Command, " "))
+		}
+		return exitOK
+	}
+
+	pending, err := readPending(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	for _, e := range pending {
+		if e.ID() != args[0] {
+			continue
+		}
+		if err := allow.Append(e); err != nil {
+			fail(err)
+			return exitUsage
+		}
+		fmt.Printf("approved %s for %s (%s)\n", e.ID(), e.Pkg, e.Hook)
+		return exitOK
+	}
+	fail(fmt.Errorf("no blocked hook with id %q; run a build first, then approve the id it prints", args[0]))
+	return exitUsage
+}
+
+// ---------------------------------------------------------------------------
+// run / install (ephemeral, D34a)
+
+func cmdRun(args []string, install bool) int {
+	if len(args) == 0 {
+		fail(errors.New("usage: bojo run|install <url>#<pkg>@<version>"))
+		return exitUsage
+	}
+	spec, err := parseSpec(args[0])
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+
+	tmp, err := os.MkdirTemp("", "bojo-*")
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	defer os.RemoveAll(tmp)
+
+	cfgText := fmt.Sprintf(`[project]
+name    = "ephemeral"
+version = "0.0.0"
+entry   = "main.mojo"
+
+[[deps-from]]
+repo = %q
+tag  = %q
+libs = [%q]
+`, spec.repo, spec.pkg+"/"+spec.version, spec.pkg)
+	if err := os.WriteFile(filepath.Join(tmp, "bojo.toml"), []byte(cfgText), 0o644); err != nil {
+		fail(err)
+		return exitUsage
+	}
+
+	cfg, err := manifest.Load(tmp)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	store := cache.New(tmp)
+	r := &resolve.Resolver{Store: store}
+	g, err := r.Resolve(cfg)
+	if err != nil {
+		fail(err)
+		return resolveExit(err)
+	}
+
+	p, ok := g.Packages[spec.pkg]
+	if !ok {
+		fail(fmt.Errorf("package %q not found", spec.pkg))
+		return exitUsage
+	}
+	if p.Kind != "cmd" {
+		fail(fmt.Errorf("package %q is a library; only kind = \"cmd\" packages can be run or installed", spec.pkg))
+		return exitUsage
+	}
+
+	allow, err := hooks.Load(tmp)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	if code := gate(tmp, allow, g); code != exitOK {
+		return code
+	}
+
+	modulesDir, err := build.Materialize(tmp, g.Routes)
+	if err != nil {
+		fail(err)
+		return exitBuild
+	}
+	entry := filepath.Join(p.Dir, p.Entry)
+	out := filepath.Join(tmp, "out", spec.pkg)
+	if err := build.Mojo(p.Dir, entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
+		fail(fmt.Errorf("mojo build failed: %w", err))
+		return exitBuild
+	}
+
+	if install {
+		binDir := binDirPath()
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			fail(err)
+			return exitUsage
+		}
+		dest := filepath.Join(binDir, spec.pkg)
+		if _, err := os.Stat(dest); err == nil {
+			fail(fmt.Errorf("%s already exists; pass --force to overwrite", dest))
+			return exitUsage
+		}
+		if err := copyFile(out, dest); err != nil {
+			fail(err)
+			return exitUsage
+		}
+		fmt.Printf("installed %s\n", dest)
+		if !pathContains(binDir) {
+			fmt.Printf("note: %s is not in PATH\n", binDir)
+			fmt.Printf("      export PATH=\"%s:$PATH\"\n", binDir)
+		}
+		return exitOK
+	}
+
+	cmd := exec.Command(out)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return exitBuild
+	}
+	return exitOK
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+
+func resolveProject() (string, *resolve.Graph, int) {
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return "", nil, exitUsage
+	}
+	cfg, err := manifest.Load(dir)
+	if err != nil {
+		fail(err)
+		return "", nil, exitUsage
+	}
+	lf, err := lock.Load(dir)
+	if err != nil {
+		fail(err)
+		return "", nil, exitUsage
+	}
+	store := cache.New(dir)
+	r := &resolve.Resolver{Store: store, Locked: lf.Trees()}
+	g, err := r.Resolve(cfg)
+	if err != nil {
+		fail(err)
+		return "", nil, resolveExit(err)
+	}
+	return dir, g, exitOK
+}
+
+type spec struct{ repo, pkg, version string }
+
+// parseSpec splits `url#pkg@version`.
+func parseSpec(raw string) (spec, error) {
+	hash := strings.LastIndex(raw, "#")
+	if hash < 0 {
+		return spec{}, fmt.Errorf("%q is missing #<pkg> (example: https://github.com/owner/repo#pkg@v0.0.1)", raw)
+	}
+	repo, rest := raw[:hash], raw[hash+1:]
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return spec{}, fmt.Errorf("%q is missing @<version>", raw)
+	}
+	pkgName, ver := rest[:at], rest[at+1:]
+	if repo == "" || pkgName == "" || ver == "" {
+		return spec{}, fmt.Errorf("%q is not a valid package reference", raw)
+	}
+	return spec{repo: repo, pkg: pkgName, version: ver}, nil
+}
+
+func writeLock(dir, mojoFingerprint string, g *resolve.Graph) error {
+	lf := &lock.File{Version: 1, Mojo: mojoFingerprint}
+	for _, e := range g.Lock {
+		lf.Packages = append(lf.Packages, lock.Entry{
+			Name:   e.Name,
+			Repo:   e.Repo,
+			Tag:    e.Tag,
+			Commit: e.Commit,
+			Tree:   e.Tree,
+			Alias:  e.Alias,
+		})
+	}
+	return lock.Save(dir, lf)
+}
+
+func writePending(dir string, entries []hooks.Entry) error {
+	path := filepath.Join(dir, ".bojo", "pending.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+func readPending(dir string) ([]hooks.Entry, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, ".bojo", "pending.json"))
+	if err != nil {
+		return nil, errors.New("no blocked hook to approve; run a build first")
+	}
+	var entries []hooks.Entry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func appendDepFrom(dir string, s spec, alias string) error {
+	path := filepath.Join(dir, "bojo.toml")
+	var b strings.Builder
+	b.WriteString("\n[[deps-from]]\n")
+	fmt.Fprintf(&b, "repo = %q\n", s.repo)
+	fmt.Fprintf(&b, "tag  = %q\n", s.pkg+"/"+s.version)
+	fmt.Fprintf(&b, "libs = [%q]\n", s.pkg)
+	if alias != "" {
+		fmt.Fprintf(&b, "alias = { %s = %q }\n", s.pkg, alias)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(b.String())
+	return err
+}
+
+func sortedNames(g *resolve.Graph) []string {
+	names := make([]string, 0, len(g.Packages))
+	for n := range g.Packages {
+		names = append(names, n)
+	}
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j] < names[j-1]; j-- {
+			names[j], names[j-1] = names[j-1], names[j]
+		}
+	}
+	return names
+}
+
+func binDirPath() string {
+	if v := os.Getenv("BOJO_BIN"); v != "" {
+		return v
+	}
+	return filepath.Join(os.Getenv("HOME"), ".bojo", "bin")
+}
+
+func copyFile(src, dst string) error {
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, raw, 0o755)
+}
+
+func shortSHA(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 func pathContains(dir string) bool {
@@ -293,90 +885,6 @@ func pathContains(dir string) bool {
 	return false
 }
 
-func cmdClean(args []string) int {
-	dir, err := projectRoot()
-	if err != nil {
-		fail(err)
-		return exitUsage
-	}
-	all := false
-	for _, a := range args {
-		if a == "--all" {
-			all = true
-			continue
-		}
-		fail(fmt.Errorf("unknown flag %q", a))
-		return exitUsage
-	}
-
-	removed := 0
-	for _, p := range []string{filepath.Join(dir, ".bojo")} {
-		if ok, err := removeIfExists(p); err != nil {
-			fail(err)
-			return exitUsage
-		} else if ok {
-			fmt.Printf("removed %s\n", p)
-			removed++
-		}
-	}
-	if all {
-		if ok, err := removeIfExists(filepath.Join(dir, "out")); err != nil {
-			fail(err)
-			return exitUsage
-		} else if ok {
-			fmt.Printf("removed %s\n", filepath.Join(dir, "out"))
-			removed++
-		}
-	}
-	if removed == 0 {
-		fmt.Println("nothing to clean")
-	}
-	return exitOK
-}
-
-func cmdCache(args []string) int {
-	dir, err := projectRoot()
-	if err != nil {
-		fail(err)
-		return exitUsage
-	}
-	cacheDir := filepath.Join(dir, ".bojo", "cache")
-
-	if len(args) == 0 {
-		fail(errors.New("usage: bojo cache list|clear"))
-		return exitUsage
-	}
-	switch args[0] {
-	case "list":
-		src := filepath.Join(cacheDir, "src")
-		entries, err := os.ReadDir(src)
-		if err != nil {
-			fmt.Println("cache is empty")
-			return exitOK
-		}
-		for _, e := range entries {
-			fmt.Printf("  %s\n", e.Name())
-		}
-		fmt.Printf("%d repo(s) cached in %s\n", len(entries), cacheDir)
-		return exitOK
-	case "clear":
-		ok, err := removeIfExists(cacheDir)
-		if err != nil {
-			fail(err)
-			return exitUsage
-		}
-		if ok {
-			fmt.Println("cache cleared")
-		} else {
-			fmt.Println("cache is already empty")
-		}
-		return exitOK
-	default:
-		fail(fmt.Errorf("unknown cache command %q (list|clear)", args[0]))
-		return exitUsage
-	}
-}
-
 func removeIfExists(path string) (bool, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return false, nil
@@ -384,7 +892,6 @@ func removeIfExists(path string) (bool, error) {
 	return true, os.RemoveAll(path)
 }
 
-// ensureGitignore appends entry to .gitignore unless it is already present.
 func ensureGitignore(dir, entry string) {
 	path := filepath.Join(dir, ".gitignore")
 	raw, _ := os.ReadFile(path)
@@ -404,30 +911,51 @@ func ensureGitignore(dir, entry string) {
 	fmt.Fprintln(f, entry)
 }
 
-// mojoVersionOr returns the installed Mojo version, or fallback.
+// fingerprint turns `Mojo 1.2.0 (2016d0cd)` into `1.2.0-2016d0cd` (D35).
+func fingerprint(versionOutput string) string {
+	line := strings.TrimSpace(versionOutput)
+	fields := strings.Fields(line)
+	ver := ""
+	build := ""
+	for _, f := range fields {
+		t := strings.TrimSpace(f)
+		if strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+			build = strings.Trim(t, "()")
+			continue
+		}
+		if t != "" && (t[0] >= '0' && t[0] <= '9') && ver == "" {
+			ver = t
+		}
+	}
+	switch {
+	case ver != "" && build != "":
+		return ver + "-" + build
+	case ver != "":
+		return ver
+	default:
+		return line
+	}
+}
+
 func mojoVersionOr(fallback string) string {
 	out, err := exec.Command("mojo", "--version").Output()
 	if err != nil {
 		return fallback
 	}
-	line := strings.TrimSpace(string(out))
-	fields := strings.Fields(line) // "Mojo 1.2.0 (2016d0cd)"
-	if len(fields) >= 2 {
-		return fields[1]
+	f := fingerprint(string(out))
+	if f == "" {
+		return fallback
 	}
-	return fallback
+	return strings.SplitN(f, "-", 2)[0]
 }
 
-// hostTarget maps GOOS/GOARCH to the target triple Mojo uses.
 func hostTarget() string {
 	arch := "aarch64"
 	if runtime.GOARCH == "amd64" {
 		arch = "x86_64"
 	}
-	switch runtime.GOOS {
-	case "darwin":
+	if runtime.GOOS == "darwin" {
 		return arch + "-apple-darwin"
-	default:
-		return arch + "-unknown-linux-gnu"
 	}
+	return arch + "-unknown-linux-gnu"
 }
