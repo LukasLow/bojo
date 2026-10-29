@@ -173,11 +173,23 @@ mojo    = "1.2.0-2016d0cd"          # fingerprint from `mojo --version`
 [[package]]
 name   = "addition"
 url    = "https://github.com/LukasLow/example_pkg"
-tag    = "addition/v0.1.0"
+tag    = "addition/v0.0.1"
 commit = "9f3a2b1c4d5e6f70a1b2c3d4e5f60718293a4b5c"
 tree   = "git-tree:4d1e…"           # git tree OID of the commit
 alias  = "sum"                      # optional
+
+[python]                            # only when the project bundles Python
+version = "3.12"
+
+[[python.package]]
+name    = "numpy"
+version = "2.1.0"
+sha256  = "…"                       # hash of the installed wheel (D48)
 ```
+
+The wheel hash lives in the lock and **not** in `bojo.allow`: it is an install
+artefact, not a trust decision. If the same version suddenly resolves to a
+different hash, the build fails — that is the supply-chain alarm.
 
 ### 5.4 `bojo.allow` — trust log (JSONL, committed)
 
@@ -294,7 +306,7 @@ project/.bojo/modules/
 | 6 | Run pre-build hooks (topological, `cwd` = package dir, may write) | exit 2/3 |
 | 7 | Precompile into `cache/obj` — **not** for pkgs with a `pre-build` hook (D40) | exit 3 |
 | 8 | Collect linker flags from every pkg (`[linker]`) | — |
-| 9 | `mojo build <entry> -I .bojo/modules -I . <flags>` with the toolchain from `[toolchain] mojo` (D43) | exit 3 |
+| 9 | `mojo build <entry> -I .bojo/modules -I . <flags>` with the toolchain from `[version] mojo` (D43/D47) | exit 3 |
 | 10 | Post-build hooks, `strip`, closure, RPATH, optional stub, re-sign ad hoc | exit 3 |
 
 `MODULAR_CACHE_DIR` = `.bojo/mojo-cache` (D15). Step 10 per platform:
@@ -498,7 +510,7 @@ Exit codes:
 | D40 | pkgs with a `pre-build` hook are **not** artifact-cached | hash the hook output | foreign tool versions would create stale `.mojoc` |
 | D41 | `bojo skill` prints the skill as markdown on stdout | a separate `bojo docs` command | `bojo skill > …/SKILL.md` is one step, not a build |
 | D42 | `[[deps-from]]` is an array of tables with a `repo` field | `[deps-from."<url>"]` | tags are per pkg; one table per repo allows only one version |
-| **D43** | toolchains live machine-wide in `~/.bojo/mojo/<ver>/`, installed via `python3 -m venv` + `pip install mojo==<ver>`; `[toolchain] mojo` selects one | per-project toolchain, manual install | Mojo ships as a glibc-only Python package; a venv pins it per version and a build needs no Python |
+| **D43** | toolchains live machine-wide in `~/.bojo/mojo/<ver>/` and `~/.bojo/python/<ver>/`, installed via `bojo toolchain install <family> <ver>`; `[version] mojo` selects one | per-project toolchain, manual install | Mojo ships as a glibc-only Python package; a venv pins it per version and a build needs no Python |
 | **D44** | bundling uses a relocatable CPython (`python-build-standalone`) plus wheels via `pip --target` | ship a conda/pixi env | conda envs bake absolute prefixes into scripts, `.pth` files and native RPATHs; relocation is guesswork |
 | **D45** | a launcher stub sets `PYTHONHOME`/`PYTHONPATH` and execs the payload (`app.bin`) | require the user to set the variables | a binary cannot set its own environment; `dir` and `onefile` share one mechanism |
 | **D46** | `[python]` is opt-in; without it the target must provide Python 3.10–3.14 | always bundle | a Python-capable bundle is roughly ten times larger; pure Mojo programs stay at 5 MB |

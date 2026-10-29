@@ -176,7 +176,7 @@ What an agent must say about the limits instead of improvising:
 | `blocked: pkg … wants to run a hook` | hook without approval | let the user decide (exit 2) |
 | `conflict: route 'x' provided by …` | two packages, same import route | set `--as`, or remove one dependency |
 | `lock mismatch` (exit 5) | `bojo.lock` does not match the manifest | suggest `bojo update` |
-| `mojoc version mismatch` | toolchain differs from the one used to build | set `[toolchain] mojo` to the matching version |
+| `mojoc version mismatch` | toolchain differs from the one used to build | set `[version] mojo` to the matching version |
 
 ## What an agent must not do
 

@@ -105,6 +105,14 @@ func Install(version string) (string, error) {
 	if p, ok := Installed(version); ok {
 		return p, nil
 	}
+	// `bojo toolchain mojo v1.2` should find an installed 1.2.x.
+	if versions, err := List(); err == nil {
+		if resolved, ok := matchInstalled(version, versions); ok {
+			if p, ok := Installed(resolved); ok {
+				return p, nil
+			}
+		}
+	}
 
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -173,6 +181,21 @@ func ParseFingerprint(versionOutput string) string {
 	default:
 		return line
 	}
+}
+
+// matchInstalled resolves a version prefix ("1.2") to an installed version
+// ("1.2.0"). An ambiguous prefix is not matched.
+func matchInstalled(want string, installed []string) (string, bool) {
+	var hits []string
+	for _, v := range installed {
+		if v == want || strings.HasPrefix(v, want+".") {
+			hits = append(hits, v)
+		}
+	}
+	if len(hits) == 1 {
+		return hits[0], true
+	}
+	return "", false
 }
 
 // isMusl reports whether the C library is musl (Alpine and friends).

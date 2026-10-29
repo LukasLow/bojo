@@ -5,22 +5,12 @@ precondition, and a rough size (S / M / L). Order = recommended priority.
 
 ---
 
-## P1 — Toolchain management (`bojo toolchain`)
+## P1 — Toolchain management
 
-**What.** Install several Mojo versions side by side and pin one per project
-(rustup model): `bojo toolchain install 1.2.0`, `bojo toolchain list`,
-`[toolchain] mojo = "1.2.0"`.
-
-**Why not now.** v0.1 can use the globally installed `mojo` and only *check* the
-version.
-
-**Precondition.** Decide where toolchains live and how they are obtained.
-
-**Why it still comes first.** `.mojoc` is bound to the exact compiler version.
-Without toolchain pinning the `obj` cache is worthless on every toolchain change,
-and a team cannot build reproducibly.
-
-**Size.** M
+**Status: done in v0.1** (`bojo toolchain list`, `bojo toolchain install
+<mojo|python> <version>`, `bojo toolchain mojo v1.2`). Kept here only as a
+pointer: multi-version *switching* per project is already covered by
+`[version] mojo`.
 
 ---
 

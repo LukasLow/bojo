@@ -81,6 +81,13 @@ func PythonInstall(version string) (string, error) {
 	if p, ok := PythonInstalled(version); ok {
 		return p, nil
 	}
+	if versions, err := PythonList(); err == nil {
+		if resolved, ok := matchInstalled(version, versions); ok {
+			if p, ok := PythonInstalled(resolved); ok {
+				return p, nil
+			}
+		}
+	}
 
 	url, err := standaloneURL(version)
 	if err != nil {

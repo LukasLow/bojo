@@ -22,11 +22,29 @@ type Entry struct {
 	Alias  string `toml:"alias,omitempty"`
 }
 
+// PythonPackage pins one wheel: version and the hash that was installed.
+//
+// The hash lives here and not in bojo.allow, because it is an install artefact,
+// not a trust decision: a version that suddenly resolves to a different wheel is
+// a supply-chain event and must fail loudly (D48).
+type PythonPackage struct {
+	Name    string `toml:"name"`
+	Version string `toml:"version"`
+	SHA256  string `toml:"sha256"`
+}
+
+// Python pins the bundled interpreter and its package set.
+type Python struct {
+	Version  string          `toml:"version"`
+	Packages []PythonPackage `toml:"package"`
+}
+
 // File is the whole lock.
 type File struct {
 	Version  int     `toml:"version"`
 	Mojo     string  `toml:"mojo"`
 	Packages []Entry `toml:"package"`
+	Python   *Python `toml:"python,omitempty"`
 }
 
 // Load reads the lock. A missing file is an empty lock.

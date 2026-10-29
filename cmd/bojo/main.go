@@ -62,7 +62,7 @@ func run(args []string) int {
 	case "doctor":
 		return cmdDoctor()
 	case "toolchain":
-		return cmdToolchain(args[1:])
+		return cmdToolchains(args[1:])
 	case "init", "new":
 		return cmdInit(args[1:])
 	case "get":
@@ -172,27 +172,92 @@ func cmdToolchain(args []string) int {
 	}
 }
 
-// cmdToolchainPython installs and lists relocatable CPython runtimes (D44/D49).
+// cmdToolchainPython keeps the previous entry point working; the namespace is
+// handled by cmdToolchains.
 func cmdToolchainPython(args []string) int {
-	if len(args) == 0 || args[0] == "list" {
+	return cmdToolchains(append([]string{"python"}, args...))
+}
+
+// cmdToolchains handles the namespaced toolchain commands (D49):
+//
+//	bojo toolchain                     list everything
+//	bojo toolchain list                list everything
+//	bojo toolchain mojo list           list one family
+//	bojo toolchain install python 3.12 install one family
+//	bojo toolchain mojo v1.2           shorthand for install
+func cmdToolchains(args []string) int {
+	family := ""
+	rest := args
+	if len(rest) > 0 && isFamily(rest[0]) {
+		family = rest[0]
+		rest = rest[1:]
+	}
+	if len(rest) == 0 || rest[0] == "list" {
+		return toolchainList(family)
+	}
+	if rest[0] == "install" {
+		rest = rest[1:]
+		if family == "" {
+			if len(rest) == 0 || !isFamily(rest[0]) {
+				fail(errors.New("usage: bojo toolchain install <mojo|python> <version>"))
+				return exitUsage
+			}
+			family = rest[0]
+			rest = rest[1:]
+		}
+	}
+	if family == "" {
+		fail(errors.New("usage: bojo toolchain [list] | install <mojo|python> <version>"))
+		return exitUsage
+	}
+	if len(rest) != 1 {
+		fail(fmt.Errorf("usage: bojo toolchain install %s <version>", family))
+		return exitUsage
+	}
+	return toolchainInstall(family, rest[0])
+}
+
+func isFamily(s string) bool { return s == "mojo" || s == "python" }
+
+func toolchainList(family string) int {
+	if family == "" || family == "mojo" {
+		versions, err := toolchain.List()
+		if err != nil {
+			fail(err)
+			return exitUsage
+		}
+		printVersions("mojo", versions)
+	}
+	if family == "" || family == "python" {
 		versions, err := toolchain.PythonList()
 		if err != nil {
 			fail(err)
 			return exitUsage
 		}
 		printVersions("python", versions)
-		return exitOK
 	}
-	if args[0] != "install" || len(args) < 2 {
-		fail(errors.New("usage: bojo toolchain python install <version>|list"))
+	return exitOK
+}
+
+func toolchainInstall(family, version string) int {
+	var (
+		binary string
+		err    error
+	)
+	switch family {
+	case "mojo":
+		binary, err = toolchain.Install(version)
+	case "python":
+		binary, err = toolchain.PythonInstall(version)
+	default:
+		fail(fmt.Errorf("unknown toolchain family %q (mojo|python)", family))
 		return exitUsage
 	}
-	binary, err := toolchain.PythonInstall(args[1])
 	if err != nil {
 		fail(err)
 		return exitNetwork
 	}
-	fmt.Printf("installed python %s\n  %s\n", strings.TrimPrefix(args[1], "v"), binary)
+	fmt.Printf("installed %s %s\n  %s\n", family, strings.TrimPrefix(version, "v"), binary)
 	return exitOK
 }
 
