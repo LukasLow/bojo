@@ -529,14 +529,13 @@ Exit codes:
 | **D59** | a package declares native sources as `[pkg.<n>.linker] ffi = [...]` and runtime data as `runtime = [...]` | one `runtime` key for both | `ffi` is input to the *build* (sources compiled by the consumer), `runtime` is input to the *bundle* (files that must sit next to the binary) |
 | **D58** | a `.mojoc` keeps unresolved FFI symbols; measured: precompiled package with `external_call`, imported and linked by a consumer | resolve FFI at precompile time | the format carries non-elaborated code, so the symbol is bound at the consumer's final link |
 | **D64** | no precompiled artefacts: `.mojoc` is dropped | precompile as a cache layer | measured: 640 ms vs 643 ms on 40 functions, 675 ms vs 656 ms on 400; precompiling costs 742 ms, and the consumer re-resolves imports anyway (proved: a package precompiled against `socket` A links against `socket` B) |
-| **D65** | the vendor tree is `vendor/mojo/pkgs/` (direct routes, public or alias name) and `vendor/mojo/subpkgs/` (transitive routes, always `<name>_<hash8>`), plus `vendor/vendor.json` | nesting per library | hashed names are unique, so one flat root per namespace resolves everything; nesting bought no isolation (imports are resolved by name at the consumer) and duplicated trees |
-| **D66** | a route's vendor name is `<name>_<hash8>` of its own vendored directory, computed bottom-up | random or version-derived suffix | same content ⇒ same name everywhere; different content (Markus vs Anna `mojosocket`) ⇒ different name, both can coexist |
-| **D67** | import rewriting happens only in vendor copies, only in `.mojo`, only at statement start (`from <route>…` / `import <route>…`); anything else aborts the vendoring | best-effort rewriting | a half-rewritten copy of foreign code is worse than a hard error |
-| **D68** | the store (`host/owner/repo@tag-commit`, read-only, full repositories) and the vendor tree (derived, regenerable) are separate; `verify` checks the store only | one merged directory | the vendor copy differs from upstream by the rewrites; trust belongs to the store |
-| **D69** | `[pkg.<n>] exclude = [...]` filters files between store and vendor (`git archive <commit>:<subdir>`) | copy everything | a library should not ship its tests and docs into every consumer |
 | **D70** | every path element uses the **short** hash: 8 hex characters (cache `repo@<commit8>`, vendor `<route>_<hash8>`); the lock always carries the **full** 40-character commit | one length everywhere | a short form keeps paths readable and stays far below the collision risk; the lock is the authoritative record, so it must be exact |
-| **D71** | a transitive route's suffix is `sha256(repo@commit)[:8]`, not a content hash | hash the vendored bytes | the name must not move when the rewrite rules or `exclude` patterns change; provenance is the commit, and two different repositories cannot share it in practice |
-| **D72** | `import X` plus qualified use `X.f()` is supported and rewritten like `from X import …`; a bare mention that is neither aborts the vendoring | only rewrite `from` imports | Mojo accepts both forms (verified), so a rewrite that only handles `from` would produce silently broken copies |
+| **D65** | a package's import path is `<host>.<owner>.<repo>.<package>` and nothing else; the directory inside the repository is irrelevant | include the repo-internal path (`…​.lib.cprint`) | the package name is declared in `bojo.pkg.toml`, so the import path needs no hint about where the author keeps it |
+| **D66** | the vendor tree is flat: one directory per **module path** under `.vendor/`; no nesting, no hashes, no rewriting | nested vendor per package | one path ⇒ one copy, so a shared `sqlite` lands in the binary once; nesting duplicated it per dependent |
+| **D67** | manifests are mandatory: `bojo.repo.toml` at the repository root, `bojo.pkg.toml` per package | infer everything from the directory tree | without them there is no `ffi`, `runtime`, `linker`, `exclude` and no declared package name — the tool would be a worse `-I` |
+| **D68** | an alias may only be declared in the user's `bojo.toml`; bojo generates `.vendor/<alias>/__init__.mojo` re-exporting the full path | allow aliases inside libraries | a library that renames its dependencies reintroduces the collision the full path just removed |
+| **D69** | two different commits for the same module path are an error naming both chains; no MVS | highest wins | a silent upgrade is exactly what the user rejected |
+| **D73** | `[pkg.<n>] exclude = [...]` filters files between store and vendor (`git archive <commit>:<subdir>`) | copy everything | a library should not ship its tests and docs into every consumer |
 | **D61** | a package declares **one exact version**. `[repo.mojo] min`/`max` and every other range are removed | ranges for the toolchain version | Mojo has no compatibility promise between versions; a range would be a guess. One version is a fact, and `bojo doctor` can name the mismatch exactly |
 | **D62** | every manifest starts with `schema = 1` | no schema marker | a manifest is read by tools that will outlive this format; without a marker every future change is guesswork |
 | **D63** | the store path is `<host>/<owner>/<repo>@<tag>-<commit>` | `<hash>/<commit>`, or a `.git`-suffixed name | human-readable, unambiguous, and `.git` is not a legal delimiter: GitHub/GitLab strip it from URLs, so a repository effectively cannot carry it |
@@ -726,113 +725,83 @@ bojo skill > .agents/skills/bojo/SKILL.md
 
 ## 22. Store, vendor and manifests
 
-Settled in D61–D69. This section is normative for the layout.
+Settled in D61–D69.
 
-### 22.1 The store
-
-Complete repository checkouts, read-only, keyed by repository and snapshot:
+### 22.1 Import paths
 
 ```
-.bojo/cache/mojo/src/github.com/LukasLow/mojolib@7c5c6512/
+github.com.LukasLow.bojo_demo_pkg.cprint
 ```
 
-The unit is `(repo, tag, commit)` — a repository may publish several packages at
-several tags (D8). The commit is always part of the name; the tag is for humans.
-`.git` is not a valid delimiter (GitHub and GitLab strip it from URLs), `@` is,
-because no hosting platform allows it inside a repository name.
+Built from the repository URL plus the package name declared in
+`bojo.pkg.toml`. Where the author keeps the directory (`lib/cprint`,
+`packages/cprint`) does not appear in the path.
 
-### 22.2 The vendor tree
-
-What a project builds against. Generated, never edited, rebuilt from the lock:
+Mojo splits on dots, so on disk the host becomes two segments:
 
 ```
-vendor/
-    vendor.json                 provenance: route -> repo, tag, commit, required_by
-    mojo/
-        pkgs/                   direct routes, public or alias name
-            http/
-                bojo.pkg.toml   generated, deps already resolved to hashed names
-                __init__.mojo
-            tcp/
-        subpkgs/                transitive routes, always hashed
-            mojosocket_a1b2c3d4/
-            mojosocket_9f8e7d6c/
-    python/                     wheels, PYTHONPATH targets
-        numpy-2.1.0/
-    lock                        copy of bojo.lock at vendoring time
+.vendor/github/com/LukasLow/bojo_demo_pkg/cprint/__init__.mojo
 ```
 
-Two module roots, both flat:
-
-```
--I vendor/mojo/pkgs
--I vendor/mojo/subpkgs
-```
-
-### 22.3 Why hashing, and why no nesting
-
-Names, not paths, identify a module. Two routes with identical code are two
-modules and are compiled twice, so nesting would duplicate code without buying
-isolation: `-I` is a flat list, and an import is resolved by name against it. A
-package precompiled against one `socket` links against whichever `socket` the
-consumer exposes — measured, so `.mojoc` cannot isolate either (D64).
-
-The content hash replaces nesting as the isolation mechanism:
-
-```
-github.com/Markus/mojosocket@v0.5 -> mojosocket_a1b2c3d4
-github.com/Anna/mojosocket@v0.3   -> mojosocket_9f8e7d6c
-```
-
-Same content ⇒ same name in every project. Different content ⇒ different name,
-and both live side by side. `http` and `tcp` each see only their own.
-
-Because the hash is computed bottom-up, renaming a child changes the parent's
-content and therefore its hash — a change propagates exactly as far as it
-matters and no further.
-
-### 22.4 Rewriting
-
-Inside a vendor copy, `from <route> import …` and `import <route>…` become
-`from <route>_<hash8> import …`. Only `.mojo`, only at statement start, never in
-strings or comments. Mojo has no dynamic imports, so the static rewrite is
-complete; a file that cannot be rewritten with certainty aborts `bojo vendor`.
-
-The generated `bojo.pkg.toml` in a vendor copy records the resolution, so
-"which socket does this http use" is answered by reading the file:
+Inside a library the import is always written in full. Only the end user may
+shorten it, and only in `bojo.toml`:
 
 ```toml
-[deps.mojosocket_a1b2c3d4]
-repo = "github.com/Markus/mojosocket"
-tag  = "v0.5"
+[alias]
+http = "github.com.LukasLow/bojo_demo_pkg.cprint"
 ```
 
-### 22.5 Shipping a package
+bojo then generates `.vendor/http/__init__.mojo` with `from …cprint import *`.
 
-A published package always carries `bojo.pkg.toml` **and** `bojo.lock`. The lock
-records, for every dependency, where it came from and at which commit:
+### 22.2 Store and vendor
+
+The store keeps complete repositories, read-only, one checkout per commit:
 
 ```
-z  github.com/Markus/mojosocket  v0.5  9f8e7d6c4b3a...   git-tree:...
+.bojo/cache/mojo/src/github.com/LukasLow/bojo_demo_pkg@6a3efcc2/
 ```
 
-That is enough to reproduce the tree, and it is what makes a vendored copy
-explainable later: `vendor/vendor.json` points at the same identity.
+The vendor tree is flat and holds exactly one directory per module path:
 
-### 22.6 Manifests
+```
+.vendor/
+    .vendor.json          route -> repo, tag, commit, required_by
+    .vendor.lock          copy of bojo.lock at vendoring time
+    github/com/LukasLow/bojo_demo_pkg/cprint/
+    github/com/LukasLow/bojo_demo_pkg/rssum/
+    github/com/Anna/mojosocket/       <- and
+    github/com/Markus/mojosocket/     <- both, side by side
+```
 
-| File | Who writes it | Contains |
-|---|---|---|
-| `bojo.toml` | the user | project, entry, exact versions, hooks, linker, include |
-| `bojo.repo.toml` | repository root | repo metadata, the list of packages this repo publishes |
-| `bojo.pkg.toml` | per library | modules, `ffi`, `runtime`, `exclude`, deps, own lock in the vendor copy |
+One module root: `mojo build … -I .vendor`.
 
-Every manifest starts with `schema = 1` (D62). Versions are exact (D61).
+Because the path is the identity, two providers of the same short name never
+meet, and a package used by several dependents is compiled once.
 
-### 22.7 Open
+### 22.3 Versions
 
-1. Should the vendor tree offer an optional symlink view (`pkgs/http/vendor/
-   socket_a1b2c3d4`) purely for reading? Rejected for now: a second path that can
-   break, no effect on resolution.
-2. A route conflict at the *top* level (two direct dependencies claiming `http`)
-   is an error; an explicit `alias` in `bojo.toml` is the only escape.
+One version per module path. The tag names the package it belongs to, so a
+repository may publish several packages at independent versions:
+
+```
+addition/v0.0.2   cprint/v0.0.1   rssum/v0.0.1   a/v0.0.1
+```
+
+A breaking change gets a new path segment by convention (`cprint.v2` or a
+separate package `cprint_v2`); bojo does not enforce a scheme.
+
+### 22.4 Manifests
+
+| File | Where | Mandatory | Contains |
+|---|---|---|---|
+| `bojo.toml` | project | yes | project, entry, versions, hooks, linker, include, aliases |
+| `bojo.repo.toml` | repository root | yes | repo metadata, the packages this repository publishes |
+| `bojo.pkg.toml` | per package | yes | name, modules, `ffi`, `runtime`, `exclude`, deps, dependencies |
+
+All start with `schema = 1` (D62). Versions are exact (D61).
+
+### 22.5 Shipping
+
+A published package carries `bojo.pkg.toml` and `bojo.lock`; the lock records
+repository, tag, full commit and tree for every dependency, so a consumer can
+reproduce the exact tree and `vendor/.vendor.json` stays explainable.

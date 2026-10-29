@@ -98,6 +98,25 @@ func Normalize(raw string) (string, error) {
 }
 
 // Hash returns the 12-hex cache key for a normalised URL.
+// ModulePath is the import path of one package: host.owner.repo.package.
+// Mojo splits on dots, so the host becomes two directory levels on disk (D65).
+func ModulePath(normalized, pkgName string) (string, error) {
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", err
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("%q has no host", normalized)
+	}
+	repo := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
+	if repo == "" {
+		return "", fmt.Errorf("%q has no repository path", normalized)
+	}
+	parts := append([]string{u.Host}, strings.Split(repo, "/")...)
+	parts = append(parts, pkgName)
+	return strings.Join(parts, "."), nil
+}
+
 // Path turns a normalised URL into a filesystem path without scheme, i.e.
 // https://github.com/LukasLow/mojolib -> github.com/LukasLow/mojolib (D63).
 func Path(normalized string) (string, error) {

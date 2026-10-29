@@ -18,7 +18,10 @@ import (
 
 // Package is one resolved package.
 type Package struct {
-	Name   string
+	Name string
+	// Path is the import path, host.owner.repo.package (D65).
+	Path   string
+	Alias  string
 	Repo   string // normalised URL
 	Commit string
 	Tag    string
@@ -154,14 +157,28 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 
 			deps := make([]string, 0, len(p.Deps)+len(p.DepsFrom))
 			for _, d := range p.Deps {
-				deps = append(deps, d.InRepo)
+				if dp, err := urlkey.ModulePath(norm, d.InRepo); err == nil {
+					deps = append(deps, dp)
+				}
 			}
 			for _, d := range p.DepsFrom {
-				deps = append(deps, d.Libs...)
+				dn, err := urlkey.Normalize(d.Repo)
+				if err != nil {
+					return nil, err
+				}
+				for _, lib := range d.Libs {
+					if dp, err := urlkey.ModulePath(dn, lib); err == nil {
+						deps = append(deps, dp)
+					}
+				}
+			}
+			modPath, err := urlkey.ModulePath(norm, p.Name)
+			if err != nil {
+				return nil, err
 			}
 
 			if err := g.add(Package{
-				Name: p.Name, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
+				Name: p.Name, Path: modPath, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
 				Dir: p.Dir, Routes: p.Modules, DeclaredRoutes: p.Modules, Deps: deps,
 				Direct: j.direct, Kind: p.Kind, Entry: p.Entry,
 				Linker: p.Linker, Exclude: p.Exclude, Hooks: p.Hooks,
@@ -179,13 +196,27 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 				}
 				subDeps := make([]string, 0, len(dp.Deps)+len(dp.DepsFrom))
 				for _, d := range dp.Deps {
-					subDeps = append(subDeps, d.InRepo)
+					if dpath, err := urlkey.ModulePath(norm, d.InRepo); err == nil {
+						subDeps = append(subDeps, dpath)
+					}
 				}
 				for _, d := range dp.DepsFrom {
-					subDeps = append(subDeps, d.Libs...)
+					dn, err := urlkey.Normalize(d.Repo)
+					if err != nil {
+						return nil, err
+					}
+					for _, lib := range d.Libs {
+						if dpath, err := urlkey.ModulePath(dn, lib); err == nil {
+							subDeps = append(subDeps, dpath)
+						}
+					}
+				}
+				subPath, err := urlkey.ModulePath(norm, dp.Name)
+				if err != nil {
+					return nil, err
 				}
 				if err := g.add(Package{
-					Name: dp.Name, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
+					Name: dp.Name, Path: subPath, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
 					Dir: dp.Dir, Routes: dp.Modules, DeclaredRoutes: dp.Modules,
 					Deps: subDeps, Kind: dp.Kind, Entry: dp.Entry,
 					Linker: dp.Linker, Exclude: dp.Exclude, Hooks: dp.Hooks,
@@ -214,25 +245,19 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 
 // add registers a package, applies aliases and checks route conflicts (R1/R2).
 func (g *Graph) add(p Package, alias map[string]string) error {
-	if existing, ok := g.Packages[p.Name]; ok {
+	if existing, ok := g.Packages[p.Path]; ok {
 		if existing.Repo == p.Repo && existing.Commit == p.Commit && existing.Dir == p.Dir {
 			return nil // already merged
 		}
-		return fmt.Errorf("package %q is provided twice: %s@%s and %s@%s (use an alias, R6)",
-			p.Name, existing.Repo, short(existing.Commit), p.Repo, short(p.Commit))
+		return fmt.Errorf("package %q is provided twice: %s@%s and %s@%s (R6)",
+			p.Path, existing.Repo, short(existing.Commit), p.Repo, short(p.Commit))
 	}
-	g.Packages[p.Name] = &p
-
-	routes := p.Routes
+	routes := []string{p.Path}
 	if a, ok := alias[p.Name]; ok && a != "" {
-		if len(routes) != 1 {
-			return fmt.Errorf("package %q: alias is only allowed for a package with exactly one route (has %d)", p.Name, len(routes))
-		}
-		if !strings.HasPrefix(routes[0], p.Name) {
-			return fmt.Errorf("package %q: alias needs a route starting with the package name, got %q", p.Name, routes[0])
-		}
-		routes = []string{a + strings.TrimPrefix(routes[0], p.Name)}
+		routes = []string{a}
+		p.Alias = a
 	}
+	g.Packages[p.Path] = &p
 
 	for _, route := range routes {
 		cleanRoute, err := validateRoute(route)
