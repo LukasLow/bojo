@@ -88,6 +88,16 @@ func run(args []string) int {
 		return cmdRun(args[1:], true)
 	case "cache":
 		return cmdCache(args[1:])
+	case "repo-index":
+		return cmdRepoIndex(args[1:])
+	case "search":
+		return cmdSearch(args[1:])
+	case "channel":
+		return cmdChannel(args[1:])
+	case "validate":
+		return cmdValidate(args[1:])
+	case "test":
+		return cmdTest(args[1:])
 	case "vendor":
 		return cmdVendor(args[1:])
 	case "clean":
