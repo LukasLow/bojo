@@ -145,18 +145,47 @@ func scanPth(site string) error {
 }
 
 // CopyTree copies the interpreter and site-packages into outDir/python.
+// Data-only directories (share, doc, man) are skipped: they hold terminfo and
+// documentation, cost tens of megabytes and contain self-referential links.
 func CopyTree(r *Result, outDir string) error {
 	dst := filepath.Join(outDir, "python")
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
-	if err := copyDir(r.PythonHome, filepath.Join(dst, "runtime")); err != nil {
+	entries, err := os.ReadDir(r.PythonHome)
+	if err != nil {
 		return err
+	}
+	for _, e := range entries {
+		switch e.Name() {
+		case "share", "doc", "man":
+			continue
+		}
+		if err := copyDir(filepath.Join(r.PythonHome, e.Name()),
+			filepath.Join(dst, "runtime", e.Name())); err != nil {
+			return err
+		}
 	}
 	if err := copyDir(r.SitePackages, filepath.Join(dst, "site-packages")); err != nil {
 		return err
 	}
-	return nil
+	return stripInterpreter(filepath.Join(dst, "runtime"))
+}
+
+// stripInterpreter removes debug information from the interpreter only.
+// Wheel contents are left untouched: stripping a vendor binary can break its
+// program headers ("ELF load command address/offset not page-aligned").
+func stripInterpreter(runtime string) error {
+	return filepath.WalkDir(runtime, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, "python3") || strings.HasPrefix(name, "libpython") {
+			_ = exec.Command("strip", "-x", path).Run()
+		}
+		return nil
+	})
 }
 
 func copyDir(src, dst string) error {
@@ -169,27 +198,26 @@ func copyDir(src, dst string) error {
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case d.IsDir():
+		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
-		case info.Mode()&os.ModeSymlink != 0:
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			link, err := os.Readlink(path)
 			if err != nil {
 				return err
 			}
 			_ = os.Remove(target)
 			return os.Symlink(link, target)
-		default:
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(target, raw, info.Mode()|0o400)
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, raw, info.Mode()|0o400)
 	})
 }
 
