@@ -610,12 +610,21 @@ func cmdBuild(args []string) int {
 		return exitBuild
 	}
 	out := build.BinaryPath(dir, cfg.Project.Name)
-	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
+	linkerArgs := append(build.LinkerArgs(g), build.RuntimeRPATH()...)
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, linkerArgs); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
 	if cfg.Build.Strip {
 		_ = build.Strip(out)
+	}
+	bundled, err := build.Bundle(out)
+	if err != nil {
+		fail(fmt.Errorf("bundling runtime libraries: %w", err))
+		return exitBuild
+	}
+	if len(bundled) > 0 {
+		fmt.Printf("bundled %d library/ies next to the binary\n", len(bundled))
 	}
 	if err := runHooks(cfg, g, "post-build", dir); err != nil {
 		fail(err)

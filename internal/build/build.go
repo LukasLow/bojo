@@ -3,6 +3,7 @@
 package build
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,10 +65,6 @@ func Materialize(projectDir string, routes []resolve.Route) (string, error) {
 }
 
 // Lock takes the project lock. It returns a release function.
-//
-// The implementation is a PID file with O_EXCL: simple, portable and enough for
-// one project on one machine. A stale file from a crashed run is detected by
-// checking whether the PID is still alive.
 func Lock(projectDir string) (func(), error) {
 	path := filepath.Join(projectDir, ".bojo", "lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -106,6 +103,130 @@ func processAlive(pid int) bool {
 	return p.Signal(syscall.Signal(0)) == nil
 }
 
+// RuntimeRPATH makes the binary look for its libraries next to itself (D52).
+// The flags are passed at link time, because they cannot be added afterwards.
+func RuntimeRPATH() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"-Xlinker", "-rpath", "-Xlinker", "@loader_path/lib"}
+	}
+	return []string{"-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/lib"}
+}
+
+// systemLibs are provided by the target system and are never bundled.
+var systemLibs = map[string]bool{
+	"libc.so.6":             true,
+	"libm.so.6":             true,
+	"libdl.so.2":            true,
+	"libpthread.so.0":       true,
+	"librt.so.1":            true,
+	"libresolv.so.2":        true,
+	"libgcc_s.so.1":         true, // part of the base system on glibc targets
+	"ld-linux-x86-64.so.2":  true,
+	"ld-linux-aarch64.so.1": true,
+	"linux-vdso.so.1":       true,
+	"libSystem.B.dylib":     true,
+}
+
+// Bundle copies the non-system part of the runtime closure next to the binary
+// and points the binary at it. It returns the library names that were bundled.
+func Bundle(binary string) ([]string, error) {
+	libs, err := linkedLibraries(binary)
+	if err != nil {
+		return nil, err
+	}
+	libDir := filepath.Join(filepath.Dir(binary), "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	var bundled []string
+	for name, src := range libs {
+		if systemLibs[name] {
+			continue
+		}
+		dst := filepath.Join(libDir, name)
+		if err := copyFile(src, dst); err != nil {
+			return bundled, fmt.Errorf("bundling %s: %w", name, err)
+		}
+		if runtime.GOOS == "linux" {
+			_ = stripFile(dst)
+		}
+		bundled = append(bundled, name)
+	}
+
+	if runtime.GOOS == "darwin" {
+		if err := rewriteMacOS(binary, libs); err != nil {
+			return bundled, err
+		}
+	}
+	return bundled, nil
+}
+
+// linkedLibraries returns library name -> absolute path.
+func linkedLibraries(binary string) (map[string]string, error) {
+	out := map[string]string{}
+	if runtime.GOOS == "darwin" {
+		raw, err := exec.Command("otool", "-L", binary).Output()
+		if err != nil {
+			return out, fmt.Errorf("otool -L: %w", err)
+		}
+		for _, line := range strings.Split(string(raw), "\n")[1:] {
+			fields := strings.Fields(strings.TrimSpace(line))
+			if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+				continue
+			}
+			out[filepath.Base(fields[0])] = fields[0]
+		}
+		return out, nil
+	}
+
+	raw, err := exec.Command("ldd", binary).Output()
+	if err != nil {
+		return out, fmt.Errorf("ldd: %w", err)
+	}
+	sc := bufio.NewScanner(strings.NewReader(string(raw)))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var path string
+		if i := strings.Index(line, "=>"); i >= 0 {
+			rest := strings.TrimSpace(line[i+2:])
+			if strings.HasPrefix(rest, "not found") || rest == "" {
+				name := strings.Fields(line)[0]
+				return out, fmt.Errorf("%s is not found on this machine", name)
+			}
+			path = strings.Fields(rest)[0]
+		} else if strings.HasPrefix(line, "/") {
+			path = strings.Fields(line)[0]
+		}
+		if path == "" {
+			continue
+		}
+		out[filepath.Base(path)] = path
+	}
+	return out, nil
+}
+
+// rewriteMacOS points the Mach-O at @loader_path/lib and re-signs it.
+func rewriteMacOS(binary string, libs map[string]string) error {
+	for name, src := range libs {
+		if systemLibs[name] {
+			continue
+		}
+		args := []string{"-change", src, "@loader_path/lib/" + name, binary}
+		if out, err := exec.Command("install_name_tool", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("install_name_tool %s: %v: %s", name, err, strings.TrimSpace(string(out)))
+		}
+	}
+	// Any Mach-O mutation invalidates the ad-hoc signature on Apple silicon.
+	if out, err := exec.Command("codesign", "-s", "-", "--force", binary).CombinedOutput(); err != nil {
+		return fmt.Errorf("codesign: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // LinkerArgs flattens the `[linker]` sections of every package.
 func LinkerArgs(g *resolve.Graph) []string {
 	var args []string
@@ -134,8 +255,7 @@ func BinaryPath(projectDir, name string) string {
 	return filepath.Join(projectDir, "out", name)
 }
 
-// Mojo builds entry into out with the given mojo binary. ModulesDir must already
-// be materialised.
+// Mojo builds entry into out with the given mojo binary.
 func Mojo(mojoBin, projectDir, entry, out, modulesDir string, extra []string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
@@ -154,18 +274,37 @@ func Mojo(mojoBin, projectDir, entry, out, modulesDir string, extra []string) er
 }
 
 // Strip reduces a produced binary in place.
-//
-// On macOS stripping invalidates the ad-hoc signature and the binary would be
-// killed at exec, so stripping is skipped there until step 10 re-signs (review
-// finding on §14).
 func Strip(path string) error {
 	if runtime.GOOS == "darwin" {
-		return nil
+		return nil // would invalidate the signature; step 10 re-signs instead
 	}
+	return stripFile(path)
+}
+
+func stripFile(path string) error {
 	if _, err := exec.LookPath("strip"); err != nil {
 		return nil
 	}
 	return exec.Command("strip", "-s", path).Run()
+}
+
+func copyFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", src)
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, raw, info.Mode()|0o400); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 // Describe renders a route list for diagnostics.
