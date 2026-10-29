@@ -28,10 +28,18 @@ type Repo struct {
 	Mojo    MojoRange `toml:"mojo"`
 }
 
-// Linker is what a consumer will need at link time.
+// Linker describes what a package needs at link time and at run time.
+//
+// Libs/LibDirs: names and directories handed to the linker.
+// FFI: source files that belong to the native part of the package. They ship as
+// source and are compiled by the consumer, never by the package itself.
+// Runtime: data files that must travel with the finished binary (timezone
+// tables, JSON, models). They are copied into the bundle, not into the module
+// tree.
 type Linker struct {
 	Libs    []string `toml:"libs"`
 	LibDirs []string `toml:"libdirs"`
+	FFI     []string `toml:"ffi"`
 	Runtime []string `toml:"runtime"`
 }
 
