@@ -62,13 +62,10 @@ func (s *Store) Src(repo, tag, commit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	snapshot := short(commit)
-	if tag != "" {
-		// Tags are "<pkg>/<version>"; the slash would create a directory level
-		// and make the snapshot ambiguous, so it becomes an underscore.
-		snapshot = strings.ReplaceAll(tag, "/", "_") + "-" + short(commit)
-	}
-	return filepath.Join(s.Mojo(), "src", filepath.FromSlash(path)+"@"+snapshot), nil
+	// The snapshot is the commit only: one checkout per commit, no matter how
+	// many tags point at it. Tags are for people, the hash is for the machine
+	// (D63).
+	return filepath.Join(s.Mojo(), "src", filepath.FromSlash(path)+"@"+short(commit)), nil
 }
 
 // Tags lists the tags of a remote repository without cloning it.

@@ -433,7 +433,7 @@ func cmdCache(args []string) int {
 
 func cmdGet(args []string) int {
 	if len(args) == 0 {
-		fail(errors.New("usage: bojo get <url>#<pkg>@<version> [--as <name>]"))
+		fail(errors.New("usage: bojo get <url>@<pkg>/<version> [--as <name>]"))
 		return exitUsage
 	}
 	spec, err := parseSpec(args[0])
@@ -852,7 +852,7 @@ func cmdAllow(args []string) int {
 
 func cmdRun(args []string, install bool) int {
 	if len(args) == 0 {
-		fail(errors.New("usage: bojo run|install <url>#<pkg>@<version>"))
+		fail(errors.New("usage: bojo run|install <url>@<pkg>/<version>"))
 		return exitUsage
 	}
 	spec, err := parseSpec(args[0])
@@ -1023,18 +1023,19 @@ func resolveProject() (string, *resolve.Graph, int) {
 
 type spec struct{ repo, pkg, version string }
 
-// parseSpec splits `url#pkg@version`.
+// parseSpec splits `url@<pkg>/<version>`: the last @ separates the repository
+// from the tag, and the tag names the package it belongs to (D6, D70).
 func parseSpec(raw string) (spec, error) {
-	hash := strings.LastIndex(raw, "#")
-	if hash < 0 {
-		return spec{}, fmt.Errorf("%q is missing #<pkg> (example: https://github.com/owner/repo#pkg@v0.0.1)", raw)
-	}
-	repo, rest := raw[:hash], raw[hash+1:]
-	at := strings.LastIndex(rest, "@")
+	at := strings.LastIndex(raw, "@")
 	if at < 0 {
-		return spec{}, fmt.Errorf("%q is missing @<version>", raw)
+		return spec{}, fmt.Errorf("%q is missing @<pkg>/<version> (example: https://github.com/owner/repo@pkg/v0.0.1)", raw)
 	}
-	pkgName, ver := rest[:at], rest[at+1:]
+	repo, ref := raw[:at], raw[at+1:]
+	slash := strings.Index(ref, "/")
+	if slash < 0 {
+		return spec{}, fmt.Errorf("%q: the tag must be <pkg>/<version>, got %q", raw, ref)
+	}
+	pkgName, ver := ref[:slash], ref[slash+1:]
 	if repo == "" || pkgName == "" || ver == "" {
 		return spec{}, fmt.Errorf("%q is not a valid package reference", raw)
 	}
