@@ -1,0 +1,4 @@
+# build output and local state
+/bojo
+/.bojo/
+/out/
