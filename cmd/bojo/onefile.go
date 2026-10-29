@@ -12,6 +12,7 @@ import (
 	"github.com/LukasLow/bojo/internal/onefile"
 	"github.com/LukasLow/bojo/internal/pyenv"
 	"github.com/LukasLow/bojo/internal/resolve"
+	"github.com/LukasLow/bojo/internal/vendor"
 )
 
 // buildOnefile builds into a work directory and packs the result into a single
@@ -34,11 +35,12 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 	}
 	defer release()
 
-	modulesDir, err := build.Materialize(dir, g.Routes)
-	if err != nil {
+	if _, err := vendor.Build(dir, g); err != nil {
 		fail(err)
 		return exitUsage
 	}
+	modulesDir := ""
+	includes := append(vendor.Roots(dir), cfg.Build.Include...)
 	if err := runHooks(cfg, g, "pre-build", dir); err != nil {
 		fail(err)
 		return exitBuild
@@ -51,7 +53,7 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 	}
 	payload := filepath.Join(work, cfg.Project.Name)
 	args := append(build.RuntimeRPATH(), build.LinkerArgs(g, dir, cfg.Linker.LibDirs, cfg.Linker.Libs)...)
-	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, payload, modulesDir, cache.New(dir).Compiler(), cfg.Build.Include, args); err != nil {
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, payload, modulesDir, cache.New(dir).Compiler(), includes, args); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}

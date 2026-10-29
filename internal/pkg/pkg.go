@@ -63,6 +63,7 @@ type Pkg struct {
 	Entry    string                `toml:"entry"`
 	Modules  []string              `toml:"modules"`
 	Deps     map[string]Dep        `toml:"deps"`
+	Exclude  []string              `toml:"exclude"`
 	DepsFrom []DepFrom             `toml:"deps-from"`
 	Linker   Linker                `toml:"linker"`
 	Hooks    map[string][][]string `toml:"hooks"`

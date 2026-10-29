@@ -12,7 +12,8 @@ import (
 // `<out>/data/<pkg>/…`. The launcher points BOJO_DATA at that directory, so a
 // package can read its data without knowing where it was installed (D60).
 func bundleRuntimeFiles(dir string, g *resolve.Graph, outDir string) error {
-	modules := resolve.ModulesDir(dir)
+	pkgs := filepath.Join(dir, "vendor", "mojo", "pkgs")
+	subpkgs := filepath.Join(dir, "vendor", "mojo", "subpkgs")
 	for _, p := range g.Packages {
 		if len(p.Linker.Runtime) == 0 {
 			continue
@@ -21,8 +22,15 @@ func bundleRuntimeFiles(dir string, g *resolve.Graph, outDir string) error {
 		if len(p.Routes) > 0 {
 			root = p.Routes[0]
 		}
+		src0 := filepath.Join(pkgs, root)
+		if _, err := os.Stat(src0); err != nil {
+			matches, _ := filepath.Glob(filepath.Join(subpkgs, root+"_*"))
+			if len(matches) == 1 {
+				src0 = matches[0]
+			}
+		}
 		for _, entry := range p.Linker.Runtime {
-			src := filepath.Join(modules, root, entry)
+			src := filepath.Join(src0, entry)
 			dst := filepath.Join(outDir, "data", p.Name, entry)
 			if err := copyTree(src, dst); err != nil {
 				return fmt.Errorf("%s: runtime file %q: %w", p.Name, entry, err)

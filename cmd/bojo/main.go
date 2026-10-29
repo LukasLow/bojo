@@ -22,6 +22,7 @@ import (
 	"github.com/LukasLow/bojo/internal/manifest"
 	"github.com/LukasLow/bojo/internal/resolve"
 	"github.com/LukasLow/bojo/internal/toolchain"
+	"github.com/LukasLow/bojo/internal/vendor"
 	"github.com/LukasLow/bojo/skill"
 )
 
@@ -599,18 +600,19 @@ func cmdBuild(args []string) int {
 	}
 	defer release()
 
-	modulesDir, err := build.Materialize(dir, g.Routes)
-	if err != nil {
+	if _, err := vendor.Build(dir, g); err != nil {
 		fail(err)
 		return exitUsage
 	}
+	modulesDir := ""
+	includes := append(vendor.Roots(dir), cfg.Build.Include...)
 	if err := runHooks(cfg, g, "pre-build", dir); err != nil {
 		fail(err)
 		return exitBuild
 	}
 	out := build.BinaryPath(dir, cfg.Project.Name)
 	linkerArgs := append(build.RuntimeRPATH(), build.LinkerArgs(g, dir, cfg.Linker.LibDirs, cfg.Linker.Libs)...)
-	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, cache.New(dir).Compiler(), cfg.Build.Include, linkerArgs); err != nil {
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, cache.New(dir).Compiler(), includes, linkerArgs); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}

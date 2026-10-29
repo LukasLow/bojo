@@ -273,9 +273,15 @@ func Mojo(mojoBin, projectDir, entry, out, modulesDir, compilerDir string, inclu
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
-	args := []string{"build", entry, "-I", modulesDir, "-I", ".", "-o", out}
+	args := []string{"build", entry}
+	if modulesDir != "" {
+		args = append(args, "-I", modulesDir)
+	}
+	args = append(args, "-I", ".", "-o", out)
 	for _, dir := range includes {
-		args = append(args, "-I", dir)
+		if dir != "" {
+			args = append(args, "-I", dir)
+		}
 	}
 	args = append(args, extra...)
 

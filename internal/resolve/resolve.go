@@ -26,10 +26,18 @@ type Package struct {
 	Dir    string
 
 	Routes []string
-	Kind   string
-	Entry  string
-	Linker pkg.Linker
-	Hooks  map[string][][]string
+	// DeclaredRoutes are the routes as authored, before any alias (used when
+	// rewriting imports in a vendor copy).
+	DeclaredRoutes []string
+	// Deps are the package names this package depends on.
+	Deps []string
+	// Direct marks a package the project asked for itself.
+	Direct  bool
+	Kind    string
+	Entry   string
+	Linker  pkg.Linker
+	Exclude []string
+	Hooks   map[string][][]string
 }
 
 // Route maps an import route to a directory.
@@ -67,6 +75,7 @@ type Resolver struct {
 }
 
 type job struct {
+	direct bool
 	repo   string
 	tag    string
 	commit string
@@ -84,7 +93,7 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 
 	var queue []job
 	for _, d := range cfg.DepsFrom {
-		queue = append(queue, job{repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: d.Alias})
+		queue = append(queue, job{direct: true, repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: d.Alias})
 	}
 
 	fetched := map[string]string{} // "<repo>@<commit>" -> checkout dir
@@ -143,10 +152,19 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 			}
 			processed[key+"/"+lib] = true
 
+			deps := make([]string, 0, len(p.Deps)+len(p.DepsFrom))
+			for _, d := range p.Deps {
+				deps = append(deps, d.InRepo)
+			}
+			for _, d := range p.DepsFrom {
+				deps = append(deps, d.Libs...)
+			}
+
 			if err := g.add(Package{
 				Name: p.Name, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
-				Dir: p.Dir, Routes: p.Modules, Kind: p.Kind, Entry: p.Entry,
-				Linker: p.Linker, Hooks: p.Hooks,
+				Dir: p.Dir, Routes: p.Modules, DeclaredRoutes: p.Modules, Deps: deps,
+				Direct: j.direct, Kind: p.Kind, Entry: p.Entry,
+				Linker: p.Linker, Exclude: p.Exclude, Hooks: p.Hooks,
 			}, j.alias); err != nil {
 				return nil, err
 			}
@@ -159,10 +177,18 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 				if !ok {
 					return nil, fmt.Errorf("%s: package %q: in-repo dependency %q not found", norm, p.Name, d.InRepo)
 				}
+				subDeps := make([]string, 0, len(dp.Deps)+len(dp.DepsFrom))
+				for _, d := range dp.Deps {
+					subDeps = append(subDeps, d.InRepo)
+				}
+				for _, d := range dp.DepsFrom {
+					subDeps = append(subDeps, d.Libs...)
+				}
 				if err := g.add(Package{
 					Name: dp.Name, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
-					Dir: dp.Dir, Routes: dp.Modules, Kind: dp.Kind, Entry: dp.Entry,
-					Linker: dp.Linker, Hooks: dp.Hooks,
+					Dir: dp.Dir, Routes: dp.Modules, DeclaredRoutes: dp.Modules,
+					Deps: subDeps, Kind: dp.Kind, Entry: dp.Entry,
+					Linker: dp.Linker, Exclude: dp.Exclude, Hooks: dp.Hooks,
 				}, nil); err != nil {
 					return nil, err
 				}
