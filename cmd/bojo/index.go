@@ -253,8 +253,8 @@ func latestTag(raw string) (string, error) {
 			continue
 		}
 		tag := strings.TrimPrefix(fields[1], "refs/tags/")
-		if i := strings.LastIndexByte(tag, '/'); i >= 0 {
-			tag = tag[i+1:]
+		if strings.Contains(tag, "/") {
+			continue // a per-package tag is not a repository version
 		}
 		if best == "" || tag > best {
 			best = tag
