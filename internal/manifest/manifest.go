@@ -27,9 +27,17 @@ type Version struct {
 	Python string `toml:"python"`
 }
 
+// Linker declares native libraries the project links against, e.g. a C library
+// built by a pre-build hook (D57).
+type Linker struct {
+	LibDirs []string `toml:"libdirs"`
+	Libs    []string `toml:"libs"`
+}
+
 type Build struct {
-	Output string `toml:"output"`
-	Strip  bool   `toml:"strip"`
+	Output  string   `toml:"output"`
+	Strip   bool     `toml:"strip"`
+	Include []string `toml:"include"`
 }
 
 // Dep is a local dependency: a directory relative to the project root.
@@ -90,6 +98,7 @@ type File struct {
 	Deps     DepsTable             `toml:"deps"`
 	DepsFrom []DepFrom             `toml:"deps-from"`
 	Hooks    map[string][][]string `toml:"hooks"`
+	Linker   Linker                `toml:"linker"`
 }
 
 // Load reads bojo.toml from dir and validates it.

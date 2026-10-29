@@ -609,8 +609,8 @@ func cmdBuild(args []string) int {
 		return exitBuild
 	}
 	out := build.BinaryPath(dir, cfg.Project.Name)
-	linkerArgs := append(build.LinkerArgs(g), build.RuntimeRPATH()...)
-	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, cache.New(dir).Compiler(), linkerArgs); err != nil {
+	linkerArgs := append(build.RuntimeRPATH(), build.LinkerArgs(g, dir, cfg.Linker.LibDirs, cfg.Linker.Libs)...)
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, cache.New(dir).Compiler(), cfg.Build.Include, linkerArgs); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
@@ -944,7 +944,7 @@ libs = [%q]
 		fail(err)
 		return exitUsage
 	}
-	if err := build.Mojo(mojoBin, p.Dir, entry, out, modulesDir, cache.New(p.Dir).Compiler(), build.LinkerArgs(g)); err != nil {
+	if err := build.Mojo(mojoBin, p.Dir, entry, out, modulesDir, cache.New(p.Dir).Compiler(), nil, build.LinkerArgs(g, p.Dir, nil, nil)); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}

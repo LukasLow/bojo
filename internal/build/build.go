@@ -228,7 +228,7 @@ func rewriteMacOS(binary string, libs map[string]string) error {
 }
 
 // LinkerArgs flattens the `[linker]` sections of every package.
-func LinkerArgs(g *resolve.Graph) []string {
+func LinkerArgs(g *resolve.Graph, projectDir string, extraDirs, extraLibs []string) []string {
 	var args []string
 	seen := map[string]bool{}
 	add := func(flag, value string) {
@@ -247,6 +247,19 @@ func LinkerArgs(g *resolve.Graph) []string {
 			add("-l", l)
 		}
 	}
+	for _, d := range extraDirs {
+		abs := d
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(projectDir, d)
+		}
+		add("-L", abs)
+		// The linker needs the directory; so does the dynamic loader at build
+		// time, before Bundle() copies the library next to the binary.
+		args = append(args, "-Xlinker", "-rpath", "-Xlinker", abs)
+	}
+	for _, l := range extraLibs {
+		add("-l", l)
+	}
 	return args
 }
 
@@ -256,11 +269,14 @@ func BinaryPath(projectDir, name string) string {
 }
 
 // Mojo builds entry into out with the given mojo binary.
-func Mojo(mojoBin, projectDir, entry, out, modulesDir, compilerDir string, extra []string) error {
+func Mojo(mojoBin, projectDir, entry, out, modulesDir, compilerDir string, includes, extra []string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
 	args := []string{"build", entry, "-I", modulesDir, "-I", ".", "-o", out}
+	for _, dir := range includes {
+		args = append(args, "-I", dir)
+	}
 	args = append(args, extra...)
 
 	cmd := exec.Command(mojoBin, args...)

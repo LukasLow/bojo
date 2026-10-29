@@ -50,8 +50,8 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 		return exitBuild
 	}
 	payload := filepath.Join(work, cfg.Project.Name)
-	args := append(build.LinkerArgs(g), build.RuntimeRPATH()...)
-	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, payload, modulesDir, cache.New(dir).Compiler(), args); err != nil {
+	args := append(build.RuntimeRPATH(), build.LinkerArgs(g, dir, cfg.Linker.LibDirs, cfg.Linker.Libs)...)
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, payload, modulesDir, cache.New(dir).Compiler(), cfg.Build.Include, args); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
