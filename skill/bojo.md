@@ -1,190 +1,201 @@
 # bojo — Agent Skill
 
 > `bojo skill` prints this text. Save it as a skill with
-> `bojo skill > .agents/skills/bojo/SKILL.md` (or pipe it through `cat`).
-> It describes only what exists in bojo v0.1.
+> `bojo skill > .agents/skills/bojo/SKILL.md`.
+> It describes only what exists today. If the CLI and this text disagree, the
+> CLI is right — say so instead of guessing.
 
 ## When this skill applies
 
-Use it whenever a project contains a `bojo.toml`, whenever someone mentions
-`bojo build`, `bojo run`, `bojo install` or `bojo get`, or whenever a Mojo program
-needs to be built that spans more than one file.
+Any project containing a `bojo.toml`, any mention of `bojo build`, `bojo run`,
+`bojo get`, or any Mojo program spanning more than one file.
 
 ## What bojo is
 
-bojo is a package manager and build driver for Mojo. It solves three problems
+A package manager and build driver for Mojo. It solves three problems that
 `mojo build` alone does not:
 
-1. **Dependencies** — Mojo resolves imports purely through `-I` paths. There is
-   no manifest, no registry, no version in the import.
-2. **Linker flags** — `.mojoc` packages carry no link metadata. Anyone binding a
-   C library would otherwise have to hand their flags to every consumer.
-3. **Distribution** — a `mojo build` result depends on an absolute RUNPATH into
-   the build environment. It does not start on a foreign machine.
+1. **Dependencies** — Mojo resolves imports through a flat `-I` list. There is
+   no manifest, no version in the import, and two packages with the same short
+   name cannot coexist.
+2. **Native code** — a package that binds C or Rust needs linker flags and the
+   sources compiled; nothing carries that information.
+3. **Distribution** — a `mojo build` result points at an absolute RUNPATH into
+   the build environment and does not start on another machine.
 
-## The four files
+Not provided, deliberately: no precompiled artefacts (`.mojoc` buys nothing,
+measured), no static linking (Mojo cannot), no automatic hooks.
 
-| File | Role | Committed? |
+## Files
+
+| File | Role | Committed |
 |---|---|---|
-| `bojo.toml` | what **this** project needs | yes |
-| `bojo.pkg.toml` | what **one package** offers (one per directory, `import` points at directory paths) | yes |
-| `bojo.lock` | the resolved commits (the truth) | yes |
+| `bojo.toml` | what this project needs (schema 1) | yes |
+| `bojo.pkg.toml` | repository root: `import = [...]`; per package: `[pkg.<name>]` | yes |
+| `bojo.lock` | every dependency with repo, tag, full commit, tree | yes |
 | `bojo.allow` | approved hooks (JSONL) | yes |
-| `.bojo/` | cache, module root, build state | no (gitignored) |
+| `.vendor/` | generated module root, one directory per module path | **no** |
+| `.bojo/` | cache, toolchains lock, build state | **no** |
+| `.out/` | build result | **no** |
+
+## Import paths
+
+A package is imported by its full module path:
+
+```mojo
+from github.com.LukasLow.bojo_demo_pkg.cprint import banner
+```
+
+`<host>.<owner>.<repo>.<package>` — independent of where the author stores the
+directory. Libraries always write this full path; only the end user may shorten
+it, and only in `bojo.toml`:
+
+```toml
+[alias]
+cprint = "printer"
+```
+
+```mojo
+from printer import banner   # bojo generates .vendor/printer/__init__.mojo
+```
+
+## Versions
+
+One version per repository, as a plain tag (`v0.0.1`). `libs = [...]` selects
+which packages of that repository are used. `<pkg>/vX.Y.Z` tags still resolve
+for older repositories. Two different commits for the same module path are an
+error — bojo never upgrades silently.
 
 ## Commands
 
 ```
-bojo init                     create a project
-bojo get <url>#<pkg>@<ver>    add a dependency (--as <name> on a collision)
-bojo remove <pkg>             remove one
-bojo update [pkg]             re-resolve
-bojo build [--locked]         build into out/
-bojo run <url>#<pkg>@<ver>    ephemeral build and run a remote command
-bojo install <url>#<pkg>@<ver>  ephemeral build → ~/.bojo/bin
-bojo test | fmt | doc         delegate to the Mojo tools
-bojo tree | why <pkg>         graph / provenance
-bojo verify                   check the lock against a fresh checkout
-bojo doctor                   toolchain, C compiler, triple, PATH
-bojo cache list|clear         show / clear the project cache
-bojo allow <id>|--json|--list approve or list hooks
-bojo clean [--all]            remove .bojo/ (--all: also out/)
-bojo skill                    print this text
+bojo init                        create a project
+bojo get <url>@<version>         add a dependency (--as <name> on a collision)
+bojo remove <pkg>                remove one
+bojo update [pkg]                re-resolve and write bojo.lock
+bojo build [--locked]            build into .out/
+bojo run <url>@<version>         ephemeral build and run a remote command
+bojo install <url>@<version>     ephemeral build -> ~/.bojo/bin
+bojo tree | why <pkg>            graph / provenance
+bojo verify                      check the lock against a fresh checkout
+bojo doctor                      toolchain, C compiler, triple, PATH
+bojo toolchain [list|install|remove] <mojo|python> [version]
+bojo deps list|add|add-python    edit dependencies
+bojo cache list|clear            show / clear the project cache
+bojo allow <id>|--json|--list    approve or list hooks
+bojo clean [--all]               remove .bojo/ (--all: also .out/ and .vendor/)
+bojo skill                       print this text
 ```
 
 Exit codes an agent must react to:
 
-| Code | Meaning | Correct reaction |
+| Code | Meaning | Reaction |
 |---|---|---|
 | 0 | success | — |
-| 1 | usage or configuration error | read the manifest, quote the message, do **not** guess |
-| 2 | **blocked by a missing hook approval — nothing was executed** | show the user the proposal; **never** approve it yourself |
+| 1 | usage or configuration error | quote the message, do not guess |
+| 2 | blocked by a missing hook approval, **nothing ran** | show the user the proposal; never approve it yourself |
 | 3 | build or link failure | `bojo doctor`, then the build log |
-| 4 | network or clone failure | retry, or `--offline` |
-| 5 | lock conflict (`--locked`) | suggest `bojo update`; do not run it automatically |
+| 4 | network or clone failure | retry |
+| 5 | lock conflict (`--locked`) | suggest `bojo update`; do not run it yourself |
 
 ## Adding a dependency
 
 ```bash
-bojo get https://github.com/LukasLow/example_pkg#addition@v0.1.0
+bojo get https://github.com/LukasLow/example_pkg@v0.1.0
 ```
-
-That writes into `bojo.toml`:
 
 ```toml
 [[deps-from]]
-repo  = "https://github.com/LukasLow/example_pkg"
-tag   = "addition/v0.1.0"
-libs  = ["addition"]
+repo = "https://github.com/LukasLow/example_pkg"
+tag  = "v0.1.0"
+libs = ["addition"]
 ```
 
-Rules an agent must know:
+## Native code (C and Rust)
 
-- One repository can offer **several packages**, and each package has its own
-  tag. Therefore there is one `[[deps-from]]` table per (repo, version) — not one
-  per repo.
-- The version is the tag `pkg/vX.Y.Z`; `@latest` picks the highest semver under
-  `<pkg>/*`. A commit pin (`@9f3a2b1c`) is allowed and must resolve uniquely.
-- Two packages with the same import route are an **error**, not a choice. On a
-  collision use `--as <name>`.
-- One route belongs to exactly one package. Mojo has no version mangling; two
-  versions of the same library cannot coexist in one build.
+The package ships sources and names them under `ffi`; the **consumer** compiles
+them in a `pre-build` hook. A library never runs a compiler on someone else's
+machine.
 
-## Building
+```toml
+[pkg.cprint]
+modules = ["cprint"]
 
-```bash
-bojo build
+[pkg.cprint.linker]
+libs  = ["cprint"]
+ffi   = ["cprint.c"]
 ```
 
-What happens, in order:
+```toml
+[linker]
+libdirs = [".bojo/native"]
+libs    = ["cprint"]
 
-1. Validate the manifest, resolve dependencies, fetch missing repos into
-   `.bojo/cache/src` and verify the git tree against `bojo.lock`.
-2. Build `.bojo/modules`: one symlink per route into the cache.
-3. Hook gate: every foreign hook needs a line in `bojo.allow`.
-4. Pre-build hooks, then precompile, then `mojo build` with exactly one `-I`.
-5. Post-processing: `strip`, library closure, relative RPATH, optional
-   single-file stub.
+[hooks]
+pre-build = [
+  ["sh", "-c", "mkdir -p .bojo/native && cc -shared -fPIC -O2 -o .bojo/native/libcprint.so .vendor/github/com/Owner/repo/cprint/cprint.c"],
+]
+```
 
-Your own Mojo source is **never** modified. The import name is the route, not the
-package name — with an alias you write `from sum import add`.
+Anything that produces a C ABI works: Rust needs `crate-type = ["cdylib"]` and
+`#[no_mangle] pub extern "C"`.
+
+## Runtime data
+
+Files a binary needs at run time (tables, JSON, models) are declared as
+`runtime` and copied into `.out/data/<package>/`. The launcher exports
+`BOJO_DATA` pointing at that directory; the program joins the relative path.
+
+```toml
+[pkg.randomname.linker]
+runtime = ["names.txt"]
+```
+
+```toml
+[pkg.http]
+modules = ["http"]
+exclude = ["tests/**", "docs/**"]
+```
+
+`exclude` filters what reaches `.vendor/`; the cache keeps the whole repository.
+
+## Python
+
+```toml
+[version]
+mojo   = "1.2.0"
+python = "3.12"
+
+[deps.python]
+numpy = "2.1.0"
+```
+
+`bojo toolchain install python 3.12` once. Then `bojo build` downloads wheels
+only (an sdist is refused), hashes them, installs offline and copies the
+interpreter into `.out/python/`. The launcher sets `PYTHONHOME`, `PYTHONPATH`
+and `MOJO_PYTHON_LIBRARY`.
 
 ## Hooks
 
-A hook is an external process a package wants to run during a build — typically a
-code generator (`templ generate`), a C/C++ build (`cargo build`, `cmake`), or
-binding generation.
+A hook is an argv array, never a shell string, never automatic. It runs only
+when `bojo.allow` contains a line for exactly that (repo, commit, package,
+hook, command). `bojo build` prints the pending approval and exits 2 without
+executing anything.
 
-Shape inside the package:
+## Build output
 
-```toml
-[pkg.web_templ.hooks]
-pre-build  = [["templ", "generate"]]
-post-build = []
-```
+| `[build] output` | Result |
+|---|---|
+| `dir` (default) | `.out/<name>` + `.out/lib/` + `.out/python/` + `.out/data/` |
+| `onefile` | one self-extracting file in `.out/`; first start unpacks into `~/.cache/bojo/run/<hash>/` |
 
-Behaviour:
+Both carry the runtime closure with a relative RPATH (`$ORIGIN/lib`), so the
+directory or the single file runs on another machine with the same platform.
 
-- Hooks are **argv arrays**. No shell, no script file, no pipes. If you need
-  pipes, write a program.
-- `cwd` is the package directory; hooks **may** write there.
-- **Never automatic.** Without an approval the build ends with exit 2 and one
-  line naming `bojo allow <id>`. Nothing is executed.
-- **An agent never approves on its own.** It shows the user the repo, commit,
-  package and command, and waits. There is no `-y`.
-- Hooks of your own project (`[hooks]` in your own `bojo.toml`) need no approval.
+## For an agent
 
-## Output
-
-```toml
-[build]
-output = "dir"        # default: out/ with binary + lib/
-# output = "onefile"  # single file, native stub, +2–3 ms startup
-strip  = true         # strip libstdc++: 26.4 MB → 5.29 MB
-```
-
-What an agent must say about the limits instead of improvising:
-
-- **There is no static ELF.** Mojo ships only dynamic runtime libraries
-  (`modular/modular#1317`). `output = "static"` does not exist.
-- **`libstdc++` cannot be linked in.** All three Mojo runtime libraries link it
-  themselves; static linking would change nothing.
-- **A bundle needs the runtime libraries next to the binary** (`lib/` plus a
-  relative RPATH) or the single-file stub. A bare `mojo build` binary only runs
-  on the build machine.
-- **Python interop needs Python on the target** unless the project opts in to
-  bundling. `mojo build` never embeds Python:
-
-  ```toml
-  [python]
-  version  = "3.12"
-  packages = ["numpy==2.1.0"]
-  ```
-
-  With `[python]` set, bojo ships a relocatable interpreter and the wheels with
-  the artifact (a launcher stub sets `PYTHONHOME`/`PYTHONPATH`). Without it, the
-  target machine must provide Python 3.10–3.14 and the packages. A Python-capable
-  bundle is roughly ten times larger than a pure Mojo one; say that out loud
-  instead of silently producing a binary that cannot import numpy.
-
-## Typical errors
-
-| Message | Cause | What to do |
-|---|---|---|
-| `unable to find suitable c compiler for linking` | no C driver on the host | `bojo doctor`; let the user install a toolchain — **do not** install packages on your own |
-| `error while loading shared libraries: libKGENCompilerRTShared.so` | binary shipped without the runtime libraries | use `output = "dir"` or `onefile` |
-| `blocked: pkg … wants to run a hook` | hook without approval | let the user decide (exit 2) |
-| `conflict: route 'x' provided by …` | two packages, same import route | set `--as`, or remove one dependency |
-| `lock mismatch` (exit 5) | `bojo.lock` does not match the manifest | suggest `bojo update` |
-| `mojoc version mismatch` | toolchain differs from the one used to build | set `[version] mojo` to the matching version |
-
-## What an agent must not do
-
-- Never write a `bojo.allow` line by hand. Always through `bojo allow`, always
-  after asking the user.
-- Never commit `.bojo/` and never treat it as a vendor directory.
-- Never invent linker flags. If a package needs flags, they belong in its
-  `[linker]` section.
-- Never run `mojo build` around bojo when a `bojo.toml` exists — `-I`, RPATH and
-  the closure would all be missing.
-- Never hand-edit a version in the lock. The lock is generated.
+- Never invent a flag. `bojo --help` and the subcommand help are authoritative.
+- Never approve hooks on the user's behalf.
+- After a change to `bojo.toml`, run `bojo build` once and report the first
+  error verbatim.
+- `bojo why <pkg>` answers "why is this in my tree", `bojo tree` shows the shape.

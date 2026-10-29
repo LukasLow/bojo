@@ -108,3 +108,24 @@ func TestHashIsStableAndTwelveHex(t *testing.T) {
 		t.Fatal("different URLs produced the same hash")
 	}
 }
+
+func TestModulePath(t *testing.T) {
+	cases := []struct{ repo, pkg, want string }{
+		{"https://github.com/LukasLow/bojo_demo_pkg", "cprint", "github.com.LukasLow.bojo_demo_pkg.cprint"},
+		{"https://github.com/LukasLow/bojo_demo_pkg.git", "z", "github.com.LukasLow.bojo_demo_pkg.z"},
+		{"https://gitlab.com/a/b/c", "d", "gitlab.com.a.b.c.d"},
+	}
+	for _, c := range cases {
+		norm, err := Normalize(c.repo)
+		if err != nil {
+			t.Fatalf("%s: %v", c.repo, err)
+		}
+		got, err := ModulePath(norm, c.pkg)
+		if err != nil {
+			t.Fatalf("%s: %v", c.repo, err)
+		}
+		if got != c.want {
+			t.Errorf("ModulePath(%s, %s) = %q, want %q", c.repo, c.pkg, got, c.want)
+		}
+	}
+}

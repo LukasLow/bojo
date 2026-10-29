@@ -96,7 +96,14 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 
 	var queue []job
 	for _, d := range cfg.DepsFrom {
-		queue = append(queue, job{direct: true, repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: d.Alias})
+		alias := map[string]string{}
+		for k, v := range d.Alias {
+			alias[k] = v
+		}
+		for k, v := range cfg.Alias {
+			alias[k] = v
+		}
+		queue = append(queue, job{direct: true, repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: alias})
 	}
 
 	fetched := map[string]string{} // "<repo>@<commit>" -> checkout dir
@@ -116,11 +123,15 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 		if j.commit != "" {
 			_, commit, err = r.Store.ResolveRef(norm, "", j.commit)
 		} else {
-			if len(j.libs) != 1 {
-				return nil, fmt.Errorf("%s: a tag reference needs exactly one package in libs (tags are per package)", norm)
+			// A tag is repository-wide (D74); the <pkg>/ prefix is only kept
+			// for repositories that still use per-package tags.
+			pkgForTag := ""
+			ref := j.tag
+			if i := strings.Index(ref, "/"); i > 0 {
+				pkgForTag = ref[:i]
+				ref = ref[i+1:]
 			}
-			ref := strings.TrimPrefix(j.tag, j.libs[0]+"/")
-			tagName, commit, err = r.Store.ResolveRef(norm, j.libs[0], ref)
+			tagName, commit, err = r.Store.ResolveRef(norm, pkgForTag, ref)
 		}
 		if err != nil {
 			return nil, err

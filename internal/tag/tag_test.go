@@ -47,9 +47,10 @@ func TestParseTagRejectsForeignTags(t *testing.T) {
 	}
 }
 
-func TestLatestIgnoresForeignTags(t *testing.T) {
+func TestLatestAcceptsRepositoryWideTags(t *testing.T) {
+	// One version per repository (D74): a plain vX.Y.Z tag applies to every
+	// package, a <pkg>/vX.Y.Z tag still names one package.
 	tags := []string{
-		"v9.9.9",
 		"hello/v5.0.0",
 		"addition/v0.0.1",
 		"addition/v0.0.3",
@@ -61,6 +62,23 @@ func TestLatestIgnoresForeignTags(t *testing.T) {
 	}
 	if got.String() != "v0.0.3" {
 		t.Fatalf("Latest = %q, want v0.0.3", got.String())
+	}
+
+	got, err = Latest("addition", []string{"v9.9.9", "addition/v0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "v9.9.9" {
+		t.Fatalf("repository-wide tag must win: got %q", got.String())
+	}
+}
+
+func TestFindReturnsTheTagThatWasUsed(t *testing.T) {
+	if name, v, err := Find("addition", "v0.0.2", []string{"v0.0.1", "v0.0.2"}); err != nil || name != "v0.0.2" || v.String() != "v0.0.2" {
+		t.Fatalf("repo-wide: %q %v %v", name, v, err)
+	}
+	if name, _, err := Find("addition", "0.0.1", []string{"addition/v0.0.1"}); err != nil || name != "addition/v0.0.1" {
+		t.Fatalf("package tag: %q %v", name, err)
 	}
 }
 

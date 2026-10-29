@@ -99,15 +99,65 @@ func ParseVersion(s string) (Version, error) {
 	return Version{Major: nums[0], Minor: nums[1], Patch: nums[2], Pre: pre, Raw: s}, nil
 }
 
+// versionOf reads a tag either as `<pkg>/vX.Y.Z` or as a repository-wide
+// `vX.Y.Z` (D74). Both forms carry one version for the whole repository.
+func versionOf(raw, pkg string) (Version, bool) {
+	if v, err := ParseTag(raw, pkg); err == nil {
+		return v, true
+	}
+	if v, err := ParseVersion(raw); err == nil {
+		return v, true
+	}
+	return Version{}, false
+}
+
+// Find returns the tag name and version that `ref` selects.
+func Find(pkg, ref string, tags []string) (string, Version, error) {
+	type candidate struct {
+		raw string
+		v   Version
+	}
+	var cands []candidate
+	for _, t := range tags {
+		if v, ok := versionOf(t, pkg); ok {
+			cands = append(cands, candidate{t, v})
+		}
+	}
+	if len(cands) == 0 {
+		return "", Version{}, fmt.Errorf("no version tags for package %q", pkg)
+	}
+
+	switch ref {
+	case "", "latest":
+		sort.Slice(cands, func(i, j int) bool { return cands[i].v.Compare(cands[j].v) > 0 })
+		return cands[0].raw, cands[0].v, nil
+	case "main", "master":
+		return "", Version{}, fmt.Errorf("branch %q is not a version; pin a tag or a commit", ref)
+	}
+
+	normalised := ref
+	if !strings.HasPrefix(normalised, "v") {
+		normalised = "v" + normalised
+	}
+	want, err := ParseVersion(normalised)
+	if err != nil {
+		return "", Version{}, err
+	}
+	for _, c := range cands {
+		if c.v.Compare(want) == 0 {
+			return c.raw, c.v, nil
+		}
+	}
+	return "", Version{}, fmt.Errorf("package %q has no version %s", pkg, want)
+}
+
 // Latest returns the highest version under `<pkg>/*`.
 func Latest(pkg string, tags []string) (Version, error) {
 	var versions []Version
 	for _, t := range tags {
-		v, err := ParseTag(t, pkg)
-		if err != nil {
-			continue // a tag for another package or a plain tag: ignore
+		if v, ok := versionOf(t, pkg); ok {
+			versions = append(versions, v)
 		}
-		versions = append(versions, v)
 	}
 	if len(versions) == 0 {
 		return Version{}, fmt.Errorf("no version tags for package %q", pkg)
@@ -133,11 +183,7 @@ func Match(pkg, ref string, tags []string) (Version, error) {
 		return Version{}, err
 	}
 	for _, t := range tags {
-		v, err := ParseTag(t, pkg)
-		if err != nil {
-			continue
-		}
-		if v.Compare(want) == 0 {
+		if v, ok := versionOf(t, pkg); ok && v.Compare(want) == 0 {
 			return v, nil
 		}
 	}

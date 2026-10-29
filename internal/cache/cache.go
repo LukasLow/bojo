@@ -100,11 +100,10 @@ func (s *Store) ResolveRef(repo, pkgName, ref string) (tagName, commit string, e
 	if err != nil {
 		return "", "", err
 	}
-	v, err := tag.Match(pkgName, ref, tags)
+	tagName, _, err = tag.Find(pkgName, ref, tags)
 	if err != nil {
 		return "", "", err
 	}
-	tagName = pkgName + "/" + v.String()
 	commit, err = s.commitOfTag(repo, tagName)
 	if err != nil {
 		return "", "", err

@@ -99,6 +99,7 @@ type File struct {
 	Deps     DepsTable             `toml:"deps"`
 	DepsFrom []DepFrom             `toml:"deps-from"`
 	Hooks    map[string][][]string `toml:"hooks"`
+	Alias    map[string]string     `toml:"alias"`
 	Linker   Linker                `toml:"linker"`
 }
 
