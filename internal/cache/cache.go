@@ -96,7 +96,7 @@ func (s *Store) commitOfTag(repo, tagName string) (string, error) {
 	}
 	out, err := run("", "git", "ls-remote", norm, "refs/tags/"+tagName, "refs/tags/"+tagName+"^{}")
 	if err != nil {
-		return "", err
+		return "", &FetchError{Err: err}
 	}
 	return pickCommit(out, tagName)
 }
@@ -108,7 +108,7 @@ func (s *Store) resolveCommit(repo, prefix string) (string, error) {
 	}
 	out, err := run("", "git", "ls-remote", norm)
 	if err != nil {
-		return "", err
+		return "", &FetchError{Err: err}
 	}
 	var matches []string
 	seen := map[string]bool{}
@@ -196,6 +196,43 @@ func (s *Store) TreeOf(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// VerifyFresh clones the pinned commit into a temporary directory and compares
+// its tree OID with the lock (D36). It never touches the project cache, so a
+// hook that mutated the working tree cannot hide a mismatch.
+func (s *Store) VerifyFresh(repo, commit, wantTree string) error {
+	norm, err := urlkey.Normalize(repo)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "bojo-verify-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	if _, err := run(tmp, "git", "init", "--quiet"); err != nil {
+		return err
+	}
+	if _, err := run(tmp, "git", "remote", "add", "origin", norm); err != nil {
+		return err
+	}
+	if _, err := run(tmp, "git", "fetch", "--quiet", "--depth", "1", "origin", commit); err != nil {
+		return &FetchError{Err: fmt.Errorf("fetching %s@%s: %w", norm, short(commit), err)}
+	}
+	if _, err := run(tmp, "git", "checkout", "--quiet", "FETCH_HEAD"); err != nil {
+		return err
+	}
+	tree, err := s.TreeOf(tmp)
+	if err != nil {
+		return err
+	}
+	want := strings.TrimPrefix(wantTree, "git-tree:")
+	if want != "" && want != tree {
+		return fmt.Errorf("tree mismatch: lock %s, checkout %s", want, tree)
+	}
+	return nil
 }
 
 func pickCommit(lsRemote, tagName string) (string, error) {

@@ -135,6 +135,19 @@ func equalArgs(a, b []string) bool {
 	return true
 }
 
+// Filter returns a store containing only entries whose commit is the one pinned
+// in the lock. Anything else is stale and must not authorise a run (D28).
+func (s *Store) Filter(locked map[string]string) *Store {
+	out := &Store{Path: s.Path, byID: map[string]Entry{}}
+	for _, e := range s.Entries {
+		if locked[e.Repo] == e.Commit {
+			out.Entries = append(out.Entries, e)
+			out.byID[e.ID()] = e
+		}
+	}
+	return out
+}
+
 // Stale returns entries whose (repo, commit) is not part of the current lock.
 // Such lines are ignored and reported (D28).
 func (s *Store) Stale(locked map[string]string) []Entry {

@@ -4,6 +4,7 @@ package resolve
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,7 +19,7 @@ import (
 // Package is one resolved package.
 type Package struct {
 	Name   string
-	Repo   string // normalised URL, empty for in-repo packages of a local tree
+	Repo   string // normalised URL
 	Commit string
 	Tag    string
 	Tree   string
@@ -56,11 +57,21 @@ type Graph struct {
 	Lock     []LockEntry
 }
 
-// Resolver carries the cache, the locked trees and reports progress.
+// Resolver carries the cache and the trees pinned by bojo.lock.
 type Resolver struct {
-	Store   *cache.Store
-	Locked  map[string]string // repo -> "git-tree:<oid>" from bojo.lock
+	Store *cache.Store
+	// Locked maps "<repo>@<commit>" to the tree OID from the lock, so a version
+	// bump does not get compared against the previous tree (review blocker).
+	Locked  map[string]string
 	Verbose bool
+}
+
+type job struct {
+	repo   string
+	tag    string
+	commit string
+	libs   []string
+	alias  map[string]string
 }
 
 // Resolve walks the dependency graph starting from the project manifest.
@@ -71,20 +82,14 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 		return nil, fmt.Errorf("local dependency %q (deps.%s.path = %q) is not implemented yet; use a repository URL", name, name, d.Path)
 	}
 
-	// Breadth-first work list of (repo, ref, libs, alias).
-	type job struct {
-		repo   string
-		tag    string
-		commit string
-		libs   []string
-		alias  map[string]string
-	}
 	var queue []job
 	for _, d := range cfg.DepsFrom {
 		queue = append(queue, job{repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: d.Alias})
 	}
 
-	seenRepo := map[string]string{} // repo@commit -> checkout dir
+	fetched := map[string]string{} // "<repo>@<commit>" -> checkout dir
+	expanded := map[string]bool{}  // repository already walked for nested deps
+	processed := map[string]bool{} // "<repo>@<commit>/<libs>" already merged
 
 	for len(queue) > 0 {
 		j := queue[0]
@@ -95,45 +100,34 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 			return nil, err
 		}
 
-		var tagName, commit, wantTree string
+		var tagName, commit string
 		if j.commit != "" {
 			_, commit, err = r.Store.ResolveRef(norm, "", j.commit)
-			if err != nil {
-				return nil, err
-			}
 		} else {
-			pkgForTag := ""
-			if len(j.libs) == 1 {
-				pkgForTag = j.libs[0]
-			}
-			if pkgForTag == "" {
+			if len(j.libs) != 1 {
 				return nil, fmt.Errorf("%s: a tag reference needs exactly one package in libs (tags are per package)", norm)
 			}
-			// bojo.toml stores the full tag (`pkg/vX.Y.Z`); the resolver works on
-			// the version part, so strip the package prefix when present.
-			ref := strings.TrimPrefix(j.tag, pkgForTag+"/")
-			tagName, commit, err = r.Store.ResolveRef(norm, pkgForTag, ref)
-			if err != nil {
-				return nil, err
-			}
+			ref := strings.TrimPrefix(j.tag, j.libs[0]+"/")
+			tagName, commit, err = r.Store.ResolveRef(norm, j.libs[0], ref)
+		}
+		if err != nil {
+			return nil, err
 		}
 
 		key := norm + "@" + commit
-		dir, ok := seenRepo[key]
+		dir, ok := fetched[key]
 		if !ok {
-			wantTree = r.Locked[norm]
-			dir, err = r.Store.Ensure(norm, commit, wantTree)
+			dir, err = r.Store.Ensure(norm, commit, r.Locked[key])
 			if err != nil {
 				return nil, err
 			}
-			seenRepo[key] = dir
+			fetched[key] = dir
 		}
 
 		tree, err := r.Store.TreeOf(dir)
 		if err != nil {
 			return nil, err
 		}
-
 		pt, err := pkg.LoadTree(dir)
 		if err != nil {
 			return nil, err
@@ -144,54 +138,45 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 			if !ok {
 				return nil, fmt.Errorf("%s: no package %q (have: %s)", norm, lib, strings.Join(pt.Names(), ", "))
 			}
+			if processed[key+"/"+lib] {
+				continue
+			}
+			processed[key+"/"+lib] = true
+
 			if err := g.add(Package{
-				Name:   p.Name,
-				Repo:   norm,
-				Commit: commit,
-				Tag:    tagName,
-				Tree:   tree,
-				Dir:    p.Dir,
-				Routes: p.Modules,
-				Kind:   p.Kind,
-				Entry:  p.Entry,
-				Linker: p.Linker,
-				Hooks:  p.Hooks,
+				Name: p.Name, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
+				Dir: p.Dir, Routes: p.Modules, Kind: p.Kind, Entry: p.Entry,
+				Linker: p.Linker, Hooks: p.Hooks,
 			}, j.alias); err != nil {
 				return nil, err
 			}
 
-			// in-repo dependencies
 			for depName, d := range p.Deps {
-				if d.InRepo == "" && d.Path == "" {
-					return nil, fmt.Errorf("%s: package %q: dependency %q needs in-repo or path", norm, p.Name, depName)
-				}
-				if d.Path != "" {
-					return nil, fmt.Errorf("%s: package %q: path dependency %q is not implemented yet", norm, p.Name, depName)
+				if d.InRepo == "" {
+					return nil, fmt.Errorf("%s: package %q: dependency %q needs in-repo (path dependencies are not implemented yet)", norm, p.Name, depName)
 				}
 				dp, ok := pt.Packages[d.InRepo]
 				if !ok {
 					return nil, fmt.Errorf("%s: package %q: in-repo dependency %q not found", norm, p.Name, d.InRepo)
 				}
 				if err := g.add(Package{
-					Name:   dp.Name,
-					Repo:   norm,
-					Commit: commit,
-					Tag:    tagName,
-					Tree:   tree,
-					Dir:    dp.Dir,
-					Routes: dp.Modules,
-					Kind:   dp.Kind,
-					Entry:  dp.Entry,
-					Linker: dp.Linker,
-					Hooks:  dp.Hooks,
+					Name: dp.Name, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
+					Dir: dp.Dir, Routes: dp.Modules, Kind: dp.Kind, Entry: dp.Entry,
+					Linker: dp.Linker, Hooks: dp.Hooks,
 				}, nil); err != nil {
 					return nil, err
 				}
 			}
+		}
 
-			// external dependencies
-			for _, d := range p.DepsFrom {
-				queue = append(queue, job{repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: d.Alias})
+		// A repository's own dependencies are enqueued once, never per package:
+		// otherwise A->B->A grows the queue forever (review blocker).
+		if !expanded[key] {
+			expanded[key] = true
+			for _, p := range pt.Packages {
+				for _, d := range p.DepsFrom {
+					queue = append(queue, job{repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: d.Alias})
+				}
 			}
 		}
 	}
@@ -203,8 +188,12 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 
 // add registers a package, applies aliases and checks route conflicts (R1/R2).
 func (g *Graph) add(p Package, alias map[string]string) error {
-	if _, exists := g.Packages[p.Name]; exists {
-		return nil // already merged; the graph is a set
+	if existing, ok := g.Packages[p.Name]; ok {
+		if existing.Repo == p.Repo && existing.Commit == p.Commit && existing.Dir == p.Dir {
+			return nil // already merged
+		}
+		return fmt.Errorf("package %q is provided twice: %s@%s and %s@%s (use an alias, R6)",
+			p.Name, existing.Repo, short(existing.Commit), p.Repo, short(p.Commit))
 	}
 	g.Packages[p.Name] = &p
 
@@ -220,16 +209,16 @@ func (g *Graph) add(p Package, alias map[string]string) error {
 	}
 
 	for _, route := range routes {
-		route = strings.Trim(route, "/")
-		if route == "" {
-			return fmt.Errorf("package %q has an empty route", p.Name)
+		cleanRoute, err := validateRoute(route)
+		if err != nil {
+			return fmt.Errorf("package %q: %w", p.Name, err)
 		}
 		for _, existing := range g.Routes {
-			if strings.EqualFold(existing.Path, route) {
-				return fmt.Errorf("conflict: route %q provided by %q and %q", route, existing.Pkg, p.Name)
+			if strings.EqualFold(existing.Path, cleanRoute) {
+				return fmt.Errorf("conflict: route %q provided by %q and %q", cleanRoute, existing.Pkg, p.Name)
 			}
 		}
-		g.Routes = append(g.Routes, Route{Path: route, Dir: p.Dir, Pkg: p.Name})
+		g.Routes = append(g.Routes, Route{Path: cleanRoute, Dir: p.Dir, Pkg: p.Name})
 	}
 
 	for hookName, commands := range p.Hooks {
@@ -238,25 +227,38 @@ func (g *Graph) add(p Package, alias map[string]string) error {
 				continue
 			}
 			g.Hooks = append(g.Hooks, hooks.Requirement{
-				Repo:    p.Repo,
-				Commit:  p.Commit,
-				Pkg:     p.Name,
-				Hook:    hookName,
-				Command: cmd,
+				Repo: p.Repo, Commit: p.Commit, Pkg: p.Name, Hook: hookName, Command: cmd,
 			})
 		}
 	}
 
-	aliasName := alias[p.Name]
 	g.Lock = append(g.Lock, LockEntry{
-		Name:   p.Name,
-		Repo:   p.Repo,
-		Tag:    p.Tag,
-		Commit: p.Commit,
-		Tree:   "git-tree:" + p.Tree,
-		Alias:  aliasName,
+		Name: p.Name, Repo: p.Repo, Tag: p.Tag, Commit: p.Commit,
+		Tree: "git-tree:" + p.Tree, Alias: alias[p.Name],
 	})
 	return nil
+}
+
+// validateRoute rejects anything that could escape the module root: absolute
+// paths, parent segments, empty segments and backslashes (review blocker).
+func validateRoute(route string) (string, error) {
+	r := strings.TrimSpace(route)
+	if r == "" {
+		return "", fmt.Errorf("empty route")
+	}
+	if strings.ContainsAny(r, "\\:") || strings.HasPrefix(r, "/") {
+		return "", fmt.Errorf("route %q must be a relative slash path", route)
+	}
+	cleaned := path.Clean(r)
+	if cleaned == "." || cleaned != strings.Trim(r, "/") {
+		return "", fmt.Errorf("route %q is not normalised", route)
+	}
+	for _, seg := range strings.Split(cleaned, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("route %q contains a forbidden segment", route)
+		}
+	}
+	return cleaned, nil
 }
 
 // ModulesDir is where the import routes are materialised.
@@ -271,4 +273,11 @@ func (g *Graph) LockedCommits() map[string]string {
 		out[e.Repo] = e.Commit
 	}
 	return out
+}
+
+func short(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }

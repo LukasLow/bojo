@@ -7,36 +7,46 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/LukasLow/bojo/internal/resolve"
 )
 
 // Materialize builds `.bojo/modules` from the resolved routes.
 //
-// The new tree is assembled next to the live one and swapped in with a rename;
-// a reader never observes a half-built module root (D26a).
+// The new tree is assembled in a unique temporary directory and swapped in with
+// a rename; a fixed `.new` name would race between two concurrent builds, so the
+// caller must hold the project lock (Lock).
 func Materialize(projectDir string, routes []resolve.Route) (string, error) {
 	dir := resolve.ModulesDir(projectDir)
-	tmp := dir + ".new"
-	old := dir + ".old"
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), "modules-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
 
-	if err := os.RemoveAll(tmp); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return "", err
-	}
 	for _, r := range routes {
 		target := filepath.Join(tmp, filepath.FromSlash(r.Path))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return "", err
 		}
-		if err := os.Symlink(r.Dir, target); err != nil {
+		// Relative links survive moving or copying the project.
+		rel, err := filepath.Rel(filepath.Dir(target), r.Dir)
+		if err != nil {
+			return "", err
+		}
+		if err := os.Symlink(rel, target); err != nil {
 			return "", fmt.Errorf("route %q -> %s: %w", r.Path, r.Dir, err)
 		}
 	}
 
+	old := dir + ".old"
 	if err := os.RemoveAll(old); err != nil {
 		return "", err
 	}
@@ -51,6 +61,49 @@ func Materialize(projectDir string, routes []resolve.Route) (string, error) {
 	}
 	_ = os.RemoveAll(old)
 	return dir, nil
+}
+
+// Lock takes the project lock. It returns a release function.
+//
+// The implementation is a PID file with O_EXCL: simple, portable and enough for
+// one project on one machine. A stale file from a crashed run is detected by
+// checking whether the PID is still alive.
+func Lock(projectDir string) (func(), error) {
+	path := filepath.Join(projectDir, ".bojo", "lock")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			fmt.Fprintf(f, "%d\n", os.Getpid())
+			f.Close()
+			return func() { _ = os.Remove(path) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, err
+		}
+		raw, readErr := os.ReadFile(path)
+		pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if readErr != nil || convErr != nil || !processAlive(pid) {
+			_ = os.Remove(path)
+			continue
+		}
+		return nil, fmt.Errorf("another bojo build is running (pid %d); remove %s if that is wrong", pid, path)
+	}
+	return nil, fmt.Errorf("could not take the project lock %s", path)
+}
+
+// processAlive reports whether a PID is still running.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // LinkerArgs flattens the `[linker]` sections of every package.
@@ -86,12 +139,7 @@ func Mojo(projectDir, entry, out, modulesDir string, extra []string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
-	args := []string{
-		"build", entry,
-		"-I", modulesDir,
-		"-I", ".",
-		"-o", out,
-	}
+	args := []string{"build", entry, "-I", modulesDir, "-I", ".", "-o", out}
 	args = append(args, extra...)
 
 	cmd := exec.Command("mojo", args...)
@@ -101,16 +149,20 @@ func Mojo(projectDir, entry, out, modulesDir string, extra []string) error {
 	cmd.Env = append(os.Environ(),
 		"MODULAR_CACHE_DIR="+filepath.Join(projectDir, ".bojo", "mojo-cache"),
 	)
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-	return nil
+	return cmd.Run()
 }
 
-// Strip reduces a produced binary in place when strip is enabled.
+// Strip reduces a produced binary in place.
+//
+// On macOS stripping invalidates the ad-hoc signature and the binary would be
+// killed at exec, so stripping is skipped there until step 10 re-signs (review
+// finding on §14).
 func Strip(path string) error {
+	if runtime.GOOS == "darwin" {
+		return nil
+	}
 	if _, err := exec.LookPath("strip"); err != nil {
-		return nil // not available: not an error
+		return nil
 	}
 	return exec.Command("strip", "-s", path).Run()
 }

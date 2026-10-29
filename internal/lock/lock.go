@@ -62,11 +62,13 @@ func Save(dir string, f *File) error {
 	return os.Rename(tmp, path)
 }
 
-// Trees returns repo -> tree for the staleness check (D28).
-func (f *File) Trees() map[string]string {
+// TreesByCommit returns "<repo>@<commit>" -> tree. Keying by commit is what makes
+// a version bump resolvable: the old tree must not be compared against the new
+// commit (review blocker).
+func (f *File) TreesByCommit() map[string]string {
 	out := map[string]string{}
 	for _, e := range f.Packages {
-		out[e.Repo] = e.Tree
+		out[e.Repo+"@"+e.Commit] = e.Tree
 	}
 	return out
 }

@@ -371,16 +371,20 @@ func cmdUpdate(args []string) int {
 		fail(err)
 		return exitUsage
 	}
-	lf, _ := lock.Load(dir)
+	lf, err := lock.Load(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
 
 	store := cache.New(dir)
-	r := &resolve.Resolver{Store: store, Locked: lf.Trees()}
+	r := &resolve.Resolver{Store: store, Locked: lf.TreesByCommit()}
 	g, err := r.Resolve(cfg)
 	if err != nil {
 		fail(err)
 		return resolveExit(err)
 	}
-	if err := writeLock(dir, lf.Mojo, g); err != nil {
+	if err := writeLock(dir, toolchainFingerprint(), g); err != nil {
 		fail(err)
 		return exitUsage
 	}
@@ -427,11 +431,22 @@ func cmdBuild(args []string) int {
 	}
 
 	store := cache.New(dir)
-	r := &resolve.Resolver{Store: store, Locked: lf.Trees()}
+	r := &resolve.Resolver{Store: store, Locked: lf.TreesByCommit()}
 	g, err := r.Resolve(cfg)
 	if err != nil {
 		fail(err)
 		return resolveExit(err)
+	}
+
+	if locked {
+		if err := compareLock(lf, g); err != nil {
+			fail(err)
+			return exitLockFile
+		}
+	}
+	if cfg.Build.Output == "onefile" {
+		fail(errors.New("output = \"onefile\" is not implemented yet; use \"dir\""))
+		return exitUsage
 	}
 
 	allow, err := hooks.Load(dir)
@@ -439,18 +454,27 @@ func cmdBuild(args []string) int {
 		fail(err)
 		return exitUsage
 	}
-	if code := gate(dir, allow, g); code != exitOK {
-		return code
-	}
-	for _, e := range allow.Stale(g.LockedCommits()) {
+	lockedCommits := g.LockedCommits()
+	for _, e := range allow.Stale(lockedCommits) {
 		fmt.Printf("note: ignoring stale approval %s for %s@%s (not in the lock)\n", e.ID(), e.Pkg, shortSHA(e.Commit))
 	}
-	for _, hook := range g.Hooks {
-		fmt.Printf("running approved hook: %s %s (%s)\n", hook.Pkg, hook.Hook, strings.Join(hook.Command, " "))
+	if code := gate(dir, allow.Filter(lockedCommits), g); code != exitOK {
+		return code
 	}
+
+	release, err := build.Lock(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	defer release()
 
 	modulesDir, err := build.Materialize(dir, g.Routes)
 	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	if err := runHooks(cfg, g, "pre-build", dir); err != nil {
 		fail(err)
 		return exitBuild
 	}
@@ -462,8 +486,62 @@ func cmdBuild(args []string) int {
 	if cfg.Build.Strip {
 		_ = build.Strip(out)
 	}
+	if err := runHooks(cfg, g, "post-build", dir); err != nil {
+		fail(err)
+		return exitBuild
+	}
 	fmt.Printf("ok: %s\n", out)
 	return exitOK
+}
+
+// compareLock enforces --locked (DESIGN §11 step 3, exit 5).
+func compareLock(lf *lock.File, g *resolve.Graph) error {
+	want := map[string]lock.Entry{}
+	for _, e := range lf.Packages {
+		want[e.Name] = e
+	}
+	for _, e := range g.Lock {
+		w, ok := want[e.Name]
+		if !ok {
+			return fmt.Errorf("lock is missing %q (run `bojo update`)", e.Name)
+		}
+		if w.Commit != e.Commit {
+			return fmt.Errorf("%q: lock pins %s but the manifest resolves %s (run `bojo update`)",
+				e.Name, shortSHA(w.Commit), shortSHA(e.Commit))
+		}
+	}
+	if len(want) != len(g.Lock) {
+		return errors.New("lock contains packages the manifest no longer uses (run `bojo update`)")
+	}
+	return nil
+}
+
+// runHooks executes one phase. Foreign hooks run in the package directory (they
+// may write there, D33); the project's own hooks run in the project root.
+func runHooks(cfg *manifest.File, g *resolve.Graph, phase, projectDir string) error {
+	for _, r := range g.Hooks {
+		if r.Hook != phase {
+			continue
+		}
+		p := g.Packages[r.Pkg]
+		if p == nil {
+			continue
+		}
+		fmt.Printf("hook %s: %s (%s)\n", phase, strings.Join(r.Command, " "), r.Pkg)
+		if err := hooks.Run(r.Command, p.Dir); err != nil {
+			return fmt.Errorf("hook %q of %s failed: %w", phase, r.Pkg, err)
+		}
+	}
+	for _, c := range cfg.Hooks[phase] {
+		if len(c) == 0 {
+			continue
+		}
+		fmt.Printf("own hook %s: %s\n", phase, strings.Join(c, " "))
+		if err := hooks.Run(c, projectDir); err != nil {
+			return fmt.Errorf("own hook %q failed: %w", phase, err)
+		}
+	}
+	return nil
 }
 
 // gate prints every unapproved hook and returns exit 2 when something is
@@ -564,7 +642,7 @@ func cmdVerify() int {
 			fmt.Printf("  skip    %s (local path dependency)\n", e.Name)
 			continue
 		}
-		if _, err := store.Ensure(e.Repo, e.Commit, e.Tree); err != nil {
+		if err := store.VerifyFresh(e.Repo, e.Commit, e.Tree); err != nil {
 			fmt.Printf("  FAILED  %s: %v\n", e.Name, err)
 			bad++
 			continue
@@ -634,6 +712,16 @@ func cmdRun(args []string, install bool) int {
 		fail(err)
 		return exitUsage
 	}
+	force := false
+	for _, a := range args[1:] {
+		switch a {
+		case "--force":
+			force = true
+		default:
+			fail(fmt.Errorf("unknown argument %q", a))
+			return exitUsage
+		}
+	}
 
 	tmp, err := os.MkdirTemp("", "bojo-*")
 	if err != nil {
@@ -680,12 +768,19 @@ libs = [%q]
 		return exitUsage
 	}
 
-	allow, err := hooks.Load(tmp)
+	// The approval store belongs to the invoking project, not to the temporary
+	// build directory: otherwise a hook could never be approved at all.
+	cwd, err := os.Getwd()
 	if err != nil {
 		fail(err)
 		return exitUsage
 	}
-	if code := gate(tmp, allow, g); code != exitOK {
+	allow, err := hooks.Load(cwd)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	if code := gate(cwd, allow.Filter(g.LockedCommits()), g); code != exitOK {
 		return code
 	}
 
@@ -708,7 +803,7 @@ libs = [%q]
 			return exitUsage
 		}
 		dest := filepath.Join(binDir, spec.pkg)
-		if _, err := os.Stat(dest); err == nil {
+		if _, err := os.Stat(dest); err == nil && !force {
 			fail(fmt.Errorf("%s already exists; pass --force to overwrite", dest))
 			return exitUsage
 		}
@@ -729,6 +824,12 @@ libs = [%q]
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
+		// The program's own exit code is not bojo's build failure: hand it through.
+		if cmd.ProcessState != nil {
+			if code := cmd.ProcessState.ExitCode(); code > 0 {
+				return code
+			}
+		}
 		return exitBuild
 	}
 	return exitOK
@@ -754,7 +855,7 @@ func resolveProject() (string, *resolve.Graph, int) {
 		return "", nil, exitUsage
 	}
 	store := cache.New(dir)
-	r := &resolve.Resolver{Store: store, Locked: lf.Trees()}
+	r := &resolve.Resolver{Store: store, Locked: lf.TreesByCommit()}
 	g, err := r.Resolve(cfg)
 	if err != nil {
 		fail(err)
@@ -861,12 +962,18 @@ func binDirPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".bojo", "bin")
 }
 
+// copyFile writes through a temporary name so a crash never leaves a truncated
+// binary in ~/.bojo/bin (review note).
 func copyFile(src, dst string) error {
 	raw, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, raw, 0o755)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o755); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 func shortSHA(s string) string {
@@ -935,6 +1042,15 @@ func fingerprint(versionOutput string) string {
 	default:
 		return line
 	}
+}
+
+// toolchainFingerprint returns `1.2.0-2016d0cd`, or "" when mojo is absent.
+func toolchainFingerprint() string {
+	out, err := exec.Command("mojo", "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return fingerprint(string(out))
 }
 
 func mojoVersionOr(fallback string) string {
