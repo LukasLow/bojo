@@ -528,6 +528,15 @@ Exit codes:
 | **D57** | a project may declare `[linker] libdirs`/`libs` and `[build] include`; the dirs are passed as `-L` **and** `-rpath` so the build-time loader finds them, and `Bundle()` copies the result into `.out/lib` | compile C code inside a package manifest | the consumer compiles (`pre-build` hook), the package only ships source; a package must never run a compiler on someone else's machine |
 | **D59** | a package declares native sources as `[pkg.<n>.linker] ffi = [...]` and runtime data as `runtime = [...]` | one `runtime` key for both | `ffi` is input to the *build* (sources compiled by the consumer), `runtime` is input to the *bundle* (files that must sit next to the binary) |
 | **D58** | a `.mojoc` keeps unresolved FFI symbols; measured: precompiled package with `external_call`, imported and linked by a consumer | resolve FFI at precompile time | the format carries non-elaborated code, so the symbol is bound at the consumer's final link |
+| **D64** | no precompiled artefacts: `.mojoc` is dropped | precompile as a cache layer | measured: 640 ms vs 643 ms on 40 functions, 675 ms vs 656 ms on 400; precompiling costs 742 ms, and the consumer re-resolves imports anyway (proved: a package precompiled against `socket` A links against `socket` B) |
+| **D65** | the vendor tree is `vendor/mojo/pkgs/` (direct routes, public or alias name) and `vendor/mojo/subpkgs/` (transitive routes, always `<name>_<hash8>`), plus `vendor/vendor.json` | nesting per library | hashed names are unique, so one flat root per namespace resolves everything; nesting bought no isolation (imports are resolved by name at the consumer) and duplicated trees |
+| **D66** | a route's vendor name is `<name>_<hash8>` of its own vendored directory, computed bottom-up | random or version-derived suffix | same content ⇒ same name everywhere; different content (Markus vs Anna `mojosocket`) ⇒ different name, both can coexist |
+| **D67** | import rewriting happens only in vendor copies, only in `.mojo`, only at statement start (`from <route>…` / `import <route>…`); anything else aborts the vendoring | best-effort rewriting | a half-rewritten copy of foreign code is worse than a hard error |
+| **D68** | the store (`host/owner/repo@tag-commit`, read-only, full repositories) and the vendor tree (derived, regenerable) are separate; `verify` checks the store only | one merged directory | the vendor copy differs from upstream by the rewrites; trust belongs to the store |
+| **D69** | `[pkg.<n>] exclude = [...]` filters files between store and vendor (`git archive <commit>:<subdir>`) | copy everything | a library should not ship its tests and docs into every consumer |
+| **D61** | a package declares **one exact version**. `[repo.mojo] min`/`max` and every other range are removed | ranges for the toolchain version | Mojo has no compatibility promise between versions; a range would be a guess. One version is a fact, and `bojo doctor` can name the mismatch exactly |
+| **D62** | every manifest starts with `schema = 1` | no schema marker | a manifest is read by tools that will outlive this format; without a marker every future change is guesswork |
+| **D63** | the store path is `<host>/<owner>/<repo>@<tag>-<commit>` | `<hash>/<commit>`, or a `.git`-suffixed name | human-readable, unambiguous, and `.git` is not a legal delimiter: GitHub/GitLab strip it from URLs, so a repository effectively cannot carry it |
 | **D55** | the cache is split into `.bojo/cache/mojo/` (git checkouts, module root, compiler cache) and `.bojo/cache/python/<version>/<key>/` (interpreter + site-packages, key = hash of the sorted package set) | one flat cache directory | each language keeps its own invalidation rule; the python key is independent of commit and flags |
 | **D56** | `onefile` carries the python environment, and the stub sets `PYTHONHOME`, `PYTHONPATH` and `MOJO_PYTHON_LIBRARY` after extraction | bundle python only in `dir` mode | otherwise a self-contained binary that uses numpy is impossible; measured 205 MB extracted |
 | **D54** | with `[version] python`, the build emits `.out/<name>` (C launcher) + `.out/<name>.bin` + `.out/python/{runtime,site-packages}` | symlink to the toolchain store | the launcher sets `PYTHONHOME`, `PYTHONPATH`, `MOJO_PYTHON_LIBRARY`; the store must not be required at runtime |
@@ -711,3 +720,104 @@ bojo skill > .agents/skills/bojo/SKILL.md
   is wrong, not the user.
 - It states the limits explicitly (no static ELF, no embedded runtime, no
   automatic hooks) and the exit-code semantics, because agents act on them.
+
+## 22. Store, vendor and manifests
+
+Settled in D61–D69. This section is normative for the layout.
+
+### 22.1 The store
+
+Complete repository checkouts, read-only, keyed by repository and snapshot:
+
+```
+.bojo/cache/mojo/src/github.com/LukasLow/mojolib@v0.0.2-7c5c651/
+```
+
+The unit is `(repo, tag, commit)` — a repository may publish several packages at
+several tags (D8). The commit is always part of the name; the tag is for humans.
+`.git` is not a valid delimiter (GitHub and GitLab strip it from URLs), `@` is,
+because no hosting platform allows it inside a repository name.
+
+### 22.2 The vendor tree
+
+What a project builds against. Generated, never edited, rebuilt from the lock:
+
+```
+vendor/
+    vendor.json                 provenance: route -> repo, tag, commit, required_by
+    mojo/
+        pkgs/                   direct routes, public or alias name
+            http/
+                bojo.pkg.toml   generated, deps already resolved to hashed names
+                __init__.mojo
+            tcp/
+        subpkgs/                transitive routes, always hashed
+            mojosocket_a1b2c3d4/
+            mojosocket_9f8e7d6c/
+    python/                     wheels, PYTHONPATH targets
+        numpy-2.1.0/
+    lock                        copy of bojo.lock at vendoring time
+```
+
+Two module roots, both flat:
+
+```
+-I vendor/mojo/pkgs
+-I vendor/mojo/subpkgs
+```
+
+### 22.3 Why hashing, and why no nesting
+
+Names, not paths, identify a module. Two routes with identical code are two
+modules and are compiled twice, so nesting would duplicate code without buying
+isolation: `-I` is a flat list, and an import is resolved by name against it. A
+package precompiled against one `socket` links against whichever `socket` the
+consumer exposes — measured, so `.mojoc` cannot isolate either (D64).
+
+The content hash replaces nesting as the isolation mechanism:
+
+```
+github.com/Markus/mojosocket@v0.5 -> mojosocket_a1b2c3d4
+github.com/Anna/mojosocket@v0.3   -> mojosocket_9f8e7d6c
+```
+
+Same content ⇒ same name in every project. Different content ⇒ different name,
+and both live side by side. `http` and `tcp` each see only their own.
+
+Because the hash is computed bottom-up, renaming a child changes the parent's
+content and therefore its hash — a change propagates exactly as far as it
+matters and no further.
+
+### 22.4 Rewriting
+
+Inside a vendor copy, `from <route> import …` and `import <route>…` become
+`from <route>_<hash8> import …`. Only `.mojo`, only at statement start, never in
+strings or comments. Mojo has no dynamic imports, so the static rewrite is
+complete; a file that cannot be rewritten with certainty aborts `bojo vendor`.
+
+The generated `bojo.pkg.toml` in a vendor copy records the resolution, so
+"which socket does this http use" is answered by reading the file:
+
+```toml
+[deps.mojosocket_a1b2c3d4]
+repo = "github.com/Markus/mojosocket"
+tag  = "v0.5"
+```
+
+### 22.5 Manifests
+
+| File | Who writes it | Contains |
+|---|---|---|
+| `bojo.toml` | the user | project, entry, exact versions, hooks, linker, include |
+| `bojo.repo.toml` | repository root | repo metadata, the list of packages this repo publishes |
+| `bojo.pkg.toml` | per library | modules, `ffi`, `runtime`, `exclude`, deps, own lock in the vendor copy |
+
+Every manifest starts with `schema = 1` (D62). Versions are exact (D61).
+
+### 22.6 Open
+
+1. Should the vendor tree offer an optional symlink view (`pkgs/http/vendor/
+   socket_a1b2c3d4`) purely for reading? Rejected for now: a second path that can
+   break, no effect on resolution.
+2. A route conflict at the *top* level (two direct dependencies claiming `http`)
+   is an error; an explicit `alias` in `bojo.toml` is the only escape.
