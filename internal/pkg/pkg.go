@@ -59,14 +59,19 @@ type DepFrom struct {
 
 // Pkg is one package declared in a package file.
 type Pkg struct {
-	Kind     string                `toml:"kind"` // "" (library) or "cmd"
-	Entry    string                `toml:"entry"`
-	Modules  []string              `toml:"modules"`
-	Deps     map[string]Dep        `toml:"deps"`
-	Exclude  []string              `toml:"exclude"`
-	DepsFrom []DepFrom             `toml:"deps-from"`
-	Linker   Linker                `toml:"linker"`
-	Hooks    map[string][][]string `toml:"hooks"`
+	Kind        string                `toml:"kind"` // "" (library) or "cmd"
+	Entry       string                `toml:"entry"`
+	Modules     []string              `toml:"modules"`
+	Deps        map[string]Dep        `toml:"deps"`
+	Exclude     []string              `toml:"exclude"`
+	Description string                `toml:"description"`
+	Keywords    []string              `toml:"keywords"`
+	License     string                `toml:"license"`
+	Homepage    string                `toml:"homepage"`
+	Readme      string                `toml:"readme"`
+	DepsFrom    []DepFrom             `toml:"deps-from"`
+	Linker      Linker                `toml:"linker"`
+	Hooks       map[string][][]string `toml:"hooks"`
 }
 
 // File is the parsed shape of one bojo.pkg.toml.

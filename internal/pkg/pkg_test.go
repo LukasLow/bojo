@@ -135,3 +135,42 @@ url = "https://github.com/Owner/Repo"
 		t.Fatal("a library without modules must be rejected")
 	}
 }
+
+func TestPackageMetadataIsOptional(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "bojo.pkg.toml")
+	if err := os.WriteFile(root, []byte("schema = 1\nimport = [\"lib/request\"]\n\n[repo]\nurl = \"https://github.com/x/y\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "lib", "request"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `schema = 1
+
+[pkg.request]
+modules     = ["request"]
+description = "HTTP GET through libcurl"
+keywords    = ["http", "network"]
+license     = "Apache-2.0"
+homepage    = "https://example.com"
+readme      = "README.md"
+`
+	if err := os.WriteFile(filepath.Join(dir, "lib", "request", "bojo.pkg.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := LoadTree(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := tree.Packages["request"]
+	if p.Description != "HTTP GET through libcurl" {
+		t.Errorf("description = %q", p.Description)
+	}
+	if len(p.Keywords) != 2 || p.Keywords[0] != "http" {
+		t.Errorf("keywords = %v", p.Keywords)
+	}
+	if p.License != "Apache-2.0" || p.Homepage != "https://example.com" || p.Readme != "README.md" {
+		t.Errorf("metadata not parsed: %+v", p)
+	}
+}
