@@ -141,10 +141,22 @@ func cmdToolchain(args []string) int {
 		}
 		return exitOK
 	}
+	if args[0] == "python" {
+		return cmdToolchainPython(args[1:])
+	}
+	if args[0] == "mojo" {
+		args = args[1:]
+		if len(args) == 0 || args[0] == "list" {
+			versions, _ := toolchain.List()
+			printVersions("mojo", versions)
+			return exitOK
+		}
+	}
+
 	switch args[0] {
 	case "install":
 		if len(args) < 2 {
-			fail(errors.New("usage: bojo toolchain install <version>"))
+			fail(errors.New("usage: bojo toolchain mojo install <version>"))
 			return exitUsage
 		}
 		binary, err := toolchain.Install(args[1])
@@ -157,6 +169,40 @@ func cmdToolchain(args []string) int {
 	default:
 		fail(fmt.Errorf("unknown toolchain command %q (install|list)", args[0]))
 		return exitUsage
+	}
+}
+
+// cmdToolchainPython installs and lists relocatable CPython runtimes (D44/D49).
+func cmdToolchainPython(args []string) int {
+	if len(args) == 0 || args[0] == "list" {
+		versions, err := toolchain.PythonList()
+		if err != nil {
+			fail(err)
+			return exitUsage
+		}
+		printVersions("python", versions)
+		return exitOK
+	}
+	if args[0] != "install" || len(args) < 2 {
+		fail(errors.New("usage: bojo toolchain python install <version>|list"))
+		return exitUsage
+	}
+	binary, err := toolchain.PythonInstall(args[1])
+	if err != nil {
+		fail(err)
+		return exitNetwork
+	}
+	fmt.Printf("installed python %s\n  %s\n", strings.TrimPrefix(args[1], "v"), binary)
+	return exitOK
+}
+
+func printVersions(family string, versions []string) {
+	if len(versions) == 0 {
+		fmt.Printf("%s: none installed\n", family)
+		return
+	}
+	for _, v := range versions {
+		fmt.Printf("%s: %s\n", family, v)
 	}
 }
 
@@ -195,14 +241,13 @@ name    = %q
 version = "0.1.0"
 entry   = "main.mojo"
 
-[toolchain]
-mojo   = %q
-target = %q
+[version]
+mojo = %q
 
 [build]
 output = "dir"
 strip  = true
-`, name, mojoVersionOr("1.2.0"), hostTarget())
+`, name, mojoVersionOr("1.2.0"))
 
 	mainMojo := "def main():\n    print(\"hello from bojo\")\n"
 
@@ -466,7 +511,7 @@ func cmdBuild(args []string) int {
 		fail(err)
 		return exitUsage
 	}
-	if locked && len(lf.Packages) == 0 && (len(cfg.DepsFrom) > 0 || len(cfg.Deps) > 0) {
+	if locked && len(lf.Packages) == 0 && (len(cfg.DepsFrom) > 0 || len(cfg.Local) > 0) {
 		fail(errors.New("--locked given but bojo.lock has no packages (run `bojo update`)"))
 		return exitLockFile
 	}
@@ -489,7 +534,7 @@ func cmdBuild(args []string) int {
 		fail(errors.New("output = \"onefile\" is not implemented yet; use \"dir\""))
 		return exitUsage
 	}
-	mojoBin, err := toolchain.Resolve(cfg.Toolchain.Mojo)
+	mojoBin, err := toolchain.Resolve(cfg.Version.Mojo)
 	if err != nil {
 		fail(err)
 		return exitUsage
@@ -839,7 +884,7 @@ libs = [%q]
 	out := filepath.Join(tmp, "out", spec.pkg)
 	version := ""
 	if cwdCfg, cerr := manifest.Load(cwd); cerr == nil {
-		version = cwdCfg.Toolchain.Mojo
+		version = cwdCfg.Version.Mojo
 	}
 	mojoBin, err := toolchain.Resolve(version)
 	if err != nil {

@@ -78,9 +78,9 @@ name    = "example"
 version = "0.1.0"
 entry   = "main.mojo"
 
-[toolchain]
-mojo   = "1.2.0"                    # display name; fingerprint is resolved
-target = "aarch64-apple-darwin"
+[version]
+mojo   = "1.2.0"                   # selects the toolchain (D43)
+python = "3.12"                    # optional; presence enables bundling (D46)
 
 [build]
 output = "dir"                     # dir | onefile
@@ -91,9 +91,13 @@ path = "lib/local_lib"
 
 [[deps-from]]                      # one table per (repo, version)
 repo  = "https://github.com/LukasLow/example_pkg"
-tag   = "addition/v0.1.0"
+tag   = "addition/v0.0.1"
 libs  = ["addition"]
 alias = { addition = "sum" }        # only on a name collision
+
+[deps.python]                      # Python packages, wheels only (D48)
+numpy  = "2.1.0"
+orjson = "*"
 
 [hooks]                            # own hooks, no allow needed (D12)
 pre-build  = [["templ", "generate"]]
@@ -109,18 +113,19 @@ Repo root (the only entry point):
 url     = "https://github.com/LukasLow/example_pkg"
 license = "Apache-2.0"
 
-[repo.mojo]
-min = "1.2.0"
-max = "1.9.0"
-
 import = ["lib/addition", "cmd/hello"]
 ```
 
-Package (`lib/addition/bojo.pkg.toml`):
+Package (`lib/addition/bojo.pkg.toml`). Every package — library **and** command —
+declares the versions it was built against; there are no min/max ranges (D47):
 
 ```toml
 [pkg.addition]
 modules = ["addition"]
+
+[pkg.addition.version]
+mojo   = "1.2.0"
+python = "3.12"                    # only if this package uses Python interop
 
 [pkg.addition.deps]
 prim_endian = { in-repo = "prim_endian" }
@@ -392,8 +397,10 @@ Blocked by 1 hook. Nothing was executed.
 | `bojo tree` / `bojo why <pkg>` | graph / provenance |
 | `bojo verify` | check the lock against a fresh checkout (never the working tree) |
 | `bojo doctor` | mojo version + fingerprint, C compiler, triple, PATH, `~/.bojo/bin` |
-| `bojo toolchain install <ver>` | install a Mojo toolchain into `~/.bojo/mojo/<ver>` (D43) |
-| `bojo toolchain list` | list installed toolchains |
+| `bojo toolchain mojo install <ver>` | install a Mojo toolchain into `~/.bojo/mojo/<ver>` (D43) |
+| `bojo toolchain mojo list` | list installed Mojo toolchains |
+| `bojo toolchain python install <ver>` | install a relocatable CPython into `~/.bojo/python/<ver>` (D44) |
+| `bojo toolchain python list` | list installed Python runtimes |
 | `bojo cache list` / `bojo cache clear` | show / clear the project cache |
 | `bojo allow <id>\|--json\|--list` | approve / show hooks |
 | `bojo clean [--all]` | remove `.bojo/` (`--all`: also `out/`) |
@@ -495,6 +502,9 @@ Exit codes:
 | **D44** | bundling uses a relocatable CPython (`python-build-standalone`) plus wheels via `pip --target` | ship a conda/pixi env | conda envs bake absolute prefixes into scripts, `.pth` files and native RPATHs; relocation is guesswork |
 | **D45** | a launcher stub sets `PYTHONHOME`/`PYTHONPATH` and execs the payload (`app.bin`) | require the user to set the variables | a binary cannot set its own environment; `dir` and `onefile` share one mechanism |
 | **D46** | `[python]` is opt-in; without it the target must provide Python 3.10–3.14 | always bundle | a Python-capable bundle is roughly ten times larger; pure Mojo programs stay at 5 MB |
+| **D47** | one `[version]` block (`mojo`, optional `python`) in `bojo.toml` and in every package; **no min/max ranges** | `min`/`max` compatibility windows | a range is a guess about the future; one declared version is a fact |
+| **D48** | Python packages are wheels only; `.pth` files are scanned; an sdist needs an explicit approval | plain `pip install` | wheels can still execute code at start-up via `.pth`, and sdists run a build backend |
+| **D49** | toolchains are namespaced: `bojo toolchain mojo …`, `bojo toolchain python …` | one flat `toolchain install` | two runtimes with independent versions and stores |
 
 ## 17. Open questions
 
@@ -548,9 +558,12 @@ has to carry a Python runtime of its own or the target machine must provide one.
 | **bundled Python** | `[python]` present | interpreter and packages ship with the artifact; no Python needed on the target |
 
 ```toml
-[python]
-version  = "3.12"                     # must be within Mojo's supported range
-packages = ["numpy==2.1.0", "orjson"] # installed into the bundled interpreter
+[version]
+python = "3.12"
+
+[deps.python]
+numpy  = "2.1.0"
+orjson = "*"
 ```
 
 ### 20.2 Why a relocatable CPython, not conda/pixi
@@ -598,12 +611,32 @@ first real measurement is in §18.
 - The bundled interpreter version must match what the Mojo runtime expects; a
   mismatch is a hard error, not a warning (D44).
 - `bojo build` warns when Mojo source imports `python`/`PythonObject` but
-  `[python]` is absent, and names the target requirement.
+  `[version] python` is absent, and names the target requirement.
 - `bojo doctor` reports: interpreter found, version, `libpython` path, whether
   the current project bundles one.
 - Native wheels are copied as-is; no compiler is required on the target.
 - Nothing about conda/pixi is used at runtime. `bojo bundle --python-env <path>`
   (best effort, path rewriting) is a POST-V0.1 escape hatch, not the default.
+
+### 20.6 Wheels only, and what a wheel can still do
+
+A wheel is installed, not executed — but two things can run code anyway:
+
+1. **`.pth` files** are imported by `site` at interpreter start-up. They are the
+   standard trick to execute code in every Python process of an environment.
+2. **sdists** run an arbitrary build backend during `pip install` (equivalent to
+   a hook, and therefore subject to the same trust rules).
+
+Rules (D48):
+
+- `pip install --only-binary=:all:` — an sdist is refused. A package that only
+  ships an sdist needs an explicit approval line, the same shape as a hook.
+- After installing, bojo scans every `.pth` file in the environment. A line that
+  is not a plain path (i.e. `import …` / `exec(…)`) blocks the build and prints
+  the file, the line and the package that owns it.
+- The scan result is recorded in the lock (`python = "3.12"` plus a hash of the
+  resolved package set), so a later build does not silently pick different
+  wheels.
 
 ## 19. Agent skill (`bojo skill`)
 

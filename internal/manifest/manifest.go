@@ -19,9 +19,11 @@ type Project struct {
 	Entry   string `toml:"entry"`
 }
 
-type Toolchain struct {
+// Version declares what the project is built against (D47). There are no
+// ranges: a range is a guess about the future, one version is a fact.
+type Version struct {
 	Mojo   string `toml:"mojo"`
-	Target string `toml:"target"`
+	Python string `toml:"python"`
 }
 
 type Build struct {
@@ -35,8 +37,6 @@ type Dep struct {
 }
 
 // DepFrom is one repository at one version, providing one or more packages.
-// It is an array of tables because a repository publishes several packages and
-// each package carries its own tag.
 type DepFrom struct {
 	Repo   string            `toml:"repo"`
 	Tag    string            `toml:"tag"`
@@ -46,12 +46,17 @@ type DepFrom struct {
 }
 
 type File struct {
-	Project   Project               `toml:"project"`
-	Toolchain Toolchain             `toml:"toolchain"`
-	Build     Build                 `toml:"build"`
-	Deps      map[string]Dep        `toml:"deps"`
-	DepsFrom  []DepFrom             `toml:"deps-from"`
-	Hooks     map[string][][]string `toml:"hooks"`
+	Project  Project               `toml:"project"`
+	Version  Version               `toml:"version"`
+	Build    Build                 `toml:"build"`
+	DepsFrom []DepFrom             `toml:"deps-from"`
+	Hooks    map[string][][]string `toml:"hooks"`
+
+	// Deps holds `[deps.<name>]` (local path) and `[deps.python]` (Python
+	// packages) in one TOML table, so it is decoded in two passes.
+	depsRaw    map[string]toml.Primitive `toml:"deps"`
+	Local      map[string]Dep
+	PythonDeps map[string]string
 }
 
 // Load reads bojo.toml from dir and validates it.
@@ -74,6 +79,22 @@ func Load(dir string) (*File, error) {
 		return nil, fmt.Errorf("%s: unknown keys: %v", path, undecoded)
 	}
 
+	f.Local = map[string]Dep{}
+	f.PythonDeps = map[string]string{}
+	for name, prim := range f.depsRaw {
+		if name == "python" {
+			if err := md.PrimitiveDecode(prim, &f.PythonDeps); err != nil {
+				return nil, fmt.Errorf("%s: deps.python: %w", path, err)
+			}
+			continue
+		}
+		var d Dep
+		if err := md.PrimitiveDecode(prim, &d); err != nil {
+			return nil, fmt.Errorf("%s: deps.%s: %w", path, name, err)
+		}
+		f.Local[name] = d
+	}
+
 	if f.Project.Name == "" {
 		return nil, fmt.Errorf("%s: [project] name is required", path)
 	}
@@ -84,6 +105,9 @@ func Load(dir string) (*File, error) {
 	case "", "dir", "onefile":
 	default:
 		return nil, fmt.Errorf("%s: [build] output must be \"dir\" or \"onefile\", got %q", path, f.Build.Output)
+	}
+	if len(f.PythonDeps) > 0 && f.Version.Python == "" {
+		return nil, fmt.Errorf("%s: deps.python needs [version] python", path)
 	}
 
 	for i, d := range f.DepsFrom {
