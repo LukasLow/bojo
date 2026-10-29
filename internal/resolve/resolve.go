@@ -78,7 +78,7 @@ type job struct {
 func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 	g := &Graph{Packages: map[string]*Package{}}
 
-	for name, d := range cfg.Local {
+	for name, d := range cfg.Deps.Local {
 		return nil, fmt.Errorf("local dependency %q (deps.%s.path = %q) is not implemented yet; use a repository URL", name, name, d.Path)
 	}
 

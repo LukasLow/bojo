@@ -167,6 +167,27 @@ func standaloneURL(version string) (string, error) {
 	return "", fmt.Errorf("no python-build-standalone build for %s/%s at version %s", runtime.GOOS, runtime.GOARCH, version)
 }
 
+// PythonRemove deletes an installed Python runtime.
+func PythonRemove(version string) error {
+	version = strings.TrimPrefix(version, "v")
+	if _, ok := PythonInstalled(version); !ok {
+		versions, err := PythonList()
+		if err != nil {
+			return err
+		}
+		resolved, ok := matchInstalled(version, versions)
+		if !ok {
+			return fmt.Errorf("python %s is not installed", version)
+		}
+		version = resolved
+	}
+	dir, err := PythonDir(version)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
 func pythonTriple() string {
 	arch := "x86_64"
 	if runtime.GOARCH == "arm64" {

@@ -183,6 +183,28 @@ func ParseFingerprint(versionOutput string) string {
 	}
 }
 
+// Remove deletes an installed Mojo toolchain. A version prefix is accepted when
+// it matches exactly one installed version.
+func Remove(version string) error {
+	version = strings.TrimPrefix(version, "v")
+	if _, ok := Installed(version); !ok {
+		versions, err := List()
+		if err != nil {
+			return err
+		}
+		resolved, ok := matchInstalled(version, versions)
+		if !ok {
+			return fmt.Errorf("mojo %s is not installed", version)
+		}
+		version = resolved
+	}
+	dir, err := Dir(version)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
 // matchInstalled resolves a version prefix ("1.2") to an installed version
 // ("1.2.0"). An ambiguous prefix is not matched.
 func matchInstalled(want string, installed []string) (string, bool) {

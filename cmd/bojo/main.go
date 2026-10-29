@@ -67,6 +67,8 @@ func run(args []string) int {
 		return cmdInit(args[1:])
 	case "get":
 		return cmdGet(args[1:])
+	case "deps":
+		return cmdDeps(args[1:])
 	case "update":
 		return cmdUpdate(args[1:])
 	case "build":
@@ -102,7 +104,10 @@ func usage() {
 
 Usage:
   bojo init                       create a project
-  bojo get <url>#<pkg>@<ver>      add a dependency (--as <name> on a collision)
+  bojo deps list                  show dependencies
+  bojo deps add <url>#<pkg>@<ver> add a repository dependency
+  bojo deps add-python <name>[@<ver>]
+                                  add a Python package
   bojo update                     resolve and write bojo.lock
   bojo build [--locked]           build into out/
   bojo run <url>#<pkg>@<ver>      ephemeral build and run a remote command
@@ -124,60 +129,6 @@ Usage:
 
 func fail(err error) { fmt.Fprintf(os.Stderr, "bojo: %v\n", err) }
 
-// cmdToolchain installs and lists Mojo toolchains (D43).
-func cmdToolchain(args []string) int {
-	if len(args) == 0 || args[0] == "list" {
-		versions, err := toolchain.List()
-		if err != nil {
-			fail(err)
-			return exitUsage
-		}
-		if len(versions) == 0 {
-			fmt.Println("no toolchain installed (run `bojo toolchain install 1.2.0`)")
-			return exitOK
-		}
-		for _, v := range versions {
-			fmt.Printf("  %s\n", v)
-		}
-		return exitOK
-	}
-	if args[0] == "python" {
-		return cmdToolchainPython(args[1:])
-	}
-	if args[0] == "mojo" {
-		args = args[1:]
-		if len(args) == 0 || args[0] == "list" {
-			versions, _ := toolchain.List()
-			printVersions("mojo", versions)
-			return exitOK
-		}
-	}
-
-	switch args[0] {
-	case "install":
-		if len(args) < 2 {
-			fail(errors.New("usage: bojo toolchain mojo install <version>"))
-			return exitUsage
-		}
-		binary, err := toolchain.Install(args[1])
-		if err != nil {
-			fail(err)
-			return exitNetwork
-		}
-		fmt.Printf("installed mojo %s\n  %s\n", strings.TrimPrefix(args[1], "v"), binary)
-		return exitOK
-	default:
-		fail(fmt.Errorf("unknown toolchain command %q (install|list)", args[0]))
-		return exitUsage
-	}
-}
-
-// cmdToolchainPython keeps the previous entry point working; the namespace is
-// handled by cmdToolchains.
-func cmdToolchainPython(args []string) int {
-	return cmdToolchains(append([]string{"python"}, args...))
-}
-
 // cmdToolchains handles the namespaced toolchain commands (D49):
 //
 //	bojo toolchain                     list everything
@@ -195,11 +146,13 @@ func cmdToolchains(args []string) int {
 	if len(rest) == 0 || rest[0] == "list" {
 		return toolchainList(family)
 	}
-	if rest[0] == "install" {
+	action := "install"
+	if rest[0] == "install" || rest[0] == "remove" {
+		action = rest[0]
 		rest = rest[1:]
 		if family == "" {
 			if len(rest) == 0 || !isFamily(rest[0]) {
-				fail(errors.New("usage: bojo toolchain install <mojo|python> <version>"))
+				fail(fmt.Errorf("usage: bojo toolchain %s <mojo|python> <version>", action))
 				return exitUsage
 			}
 			family = rest[0]
@@ -207,12 +160,15 @@ func cmdToolchains(args []string) int {
 		}
 	}
 	if family == "" {
-		fail(errors.New("usage: bojo toolchain [list] | install <mojo|python> <version>"))
+		fail(errors.New("usage: bojo toolchain [list] | install|remove <mojo|python> <version>"))
 		return exitUsage
 	}
 	if len(rest) != 1 {
-		fail(fmt.Errorf("usage: bojo toolchain install %s <version>", family))
+		fail(fmt.Errorf("usage: bojo toolchain %s %s <version>", action, family))
 		return exitUsage
+	}
+	if action == "remove" {
+		return toolchainRemove(family, rest[0])
 	}
 	return toolchainInstall(family, rest[0])
 }
@@ -236,6 +192,25 @@ func toolchainList(family string) int {
 		}
 		printVersions("python", versions)
 	}
+	return exitOK
+}
+
+func toolchainRemove(family, version string) int {
+	var err error
+	switch family {
+	case "mojo":
+		err = toolchain.Remove(version)
+	case "python":
+		err = toolchain.PythonRemove(version)
+	default:
+		fail(fmt.Errorf("unknown toolchain family %q (mojo|python)", family))
+		return exitUsage
+	}
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	fmt.Printf("removed %s %s\n", family, strings.TrimPrefix(version, "v"))
 	return exitOK
 }
 
@@ -576,7 +551,7 @@ func cmdBuild(args []string) int {
 		fail(err)
 		return exitUsage
 	}
-	if locked && len(lf.Packages) == 0 && (len(cfg.DepsFrom) > 0 || len(cfg.Local) > 0) {
+	if locked && len(lf.Packages) == 0 && (len(cfg.DepsFrom) > 0 || len(cfg.Deps.Local) > 0) {
 		fail(errors.New("--locked given but bojo.lock has no packages (run `bojo update`)"))
 		return exitLockFile
 	}

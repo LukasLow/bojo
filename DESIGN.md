@@ -400,7 +400,10 @@ Blocked by 1 hook. Nothing was executed.
 | Command | Purpose |
 |---|---|
 | `bojo init` / `bojo new` | create a project |
-| `bojo get <url>#<pkg>@<ver> [--as <name>]` | add a dependency |
+| `bojo deps list` | show Mojo/Python versions, repositories and Python packages (D50) |
+| `bojo deps add <url>#<pkg>@<ver> [--as <name>]` | add a repository dependency |
+| `bojo deps add-python <name>[@<ver>]` | add a Python package to `[deps.python]` |
+| `bojo deps check` | newer versions and CVEs (POST-V0.1, P21) |
 | `bojo remove <pkg>` / `bojo update [pkg]` | remove / re-resolve |
 | `bojo build [--locked]` | build into `out/` |
 | `bojo run <url>#<pkg>@<ver>` | ephemeral build and run (§11a) |
@@ -413,6 +416,7 @@ Blocked by 1 hook. Nothing was executed.
 | `bojo toolchain mojo list` | list installed Mojo toolchains |
 | `bojo toolchain python install <ver>` | install a relocatable CPython into `~/.bojo/python/<ver>` (D44) |
 | `bojo toolchain python list` | list installed Python runtimes |
+| `bojo toolchain remove <mojo\|python> <ver>` | delete an installed toolchain |
 | `bojo cache list` / `bojo cache clear` | show / clear the project cache |
 | `bojo allow <id>\|--json\|--list` | approve / show hooks |
 | `bojo clean [--all]` | remove `.bojo/` (`--all`: also `out/`) |
@@ -517,6 +521,34 @@ Exit codes:
 | **D47** | one `[version]` block (`mojo`, optional `python`) in `bojo.toml` and in every package; **no min/max ranges** | `min`/`max` compatibility windows | a range is a guess about the future; one declared version is a fact |
 | **D48** | Python packages are wheels only; `.pth` files are scanned; an sdist needs an explicit approval | plain `pip install` | wheels can still execute code at start-up via `.pth`, and sdists run a build backend |
 | **D49** | toolchains are namespaced: `bojo toolchain mojo …`, `bojo toolchain python …` | one flat `toolchain install` | two runtimes with independent versions and stores |
+| **D50** | dependencies live under `bojo deps …` (`list`, `add`, `add-python`, `check`) | a top-level `get` | one namespace for everything that changes the manifest |
+| **D51** | the launcher sets `MOJO_PYTHON_LIBRARY` (absolute `libpython` path) in addition to `PYTHONHOME`/`PYTHONPATH` | rely on `PATH` discovery | research shows `MOJO_PYTHON_LIBRARY` is the primary lookup; a wrong `LIBDIR` ends in `dlopen("")` |
+
+## 21. Runtime requirements (verified)
+
+Research summary, sources in the commit message. What a `mojo build` artifact
+needs on the target:
+
+1. **Always** `libKGENCompilerRTShared.so` (plus `libMSupportGlobals.so`,
+   `libAsyncRTRuntimeGlobals.so`, `libstdc++`, `libgcc_s`). The compiler links the
+   runtime into every binary, including `def main(): pass`.
+2. The loader finds them through an **absolute RUNPATH** into the build
+   environment. `MODULAR_*` variables are compiler settings and are never read by
+   `ld.so`; only `MODULAR_NVPTX_*` matters at runtime for GPU.
+3. The target does **not** need the toolchain, but it needs the runtime libraries
+   of the matching Mojo version.
+4. **Python is `dlopen`ed, not linked.** Lookup order: `MOJO_PYTHON_LIBRARY`, then
+   the first Python on `PATH` and its `LIBDIR`. A wrong `LIBDIR` ends in
+   `dlopen("")` and a confusing abort inside the KGEN runtime.
+5. Supported Python: **3.10–3.14** (3.15 fails, conda-forge split `libpython`).
+6. GPU is `dlopen`-only (`libcuda.so.1`, `libamdhip64.so`, Metal); PTX is
+   assembled at runtime.
+7. macOS: `LC_RPATH` + `@rpath/…`, `install_name_tool`, then `codesign -s -`;
+   `MACOSX_DEPLOYMENT_TARGET` decides the minimum OS in `LC_BUILD_VERSION`.
+8. Measured glibc floor for the produced binary: 2.35.
+
+Consequences already reflected in the spec: relative RPATH in step 10, the
+launcher stub (D45/D51), and the `[python]` bundling rules (§20).
 
 ## 17. Open questions
 
