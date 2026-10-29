@@ -92,6 +92,7 @@ func (d *DepsTable) UnmarshalTOML(v interface{}) error {
 }
 
 type File struct {
+	Schema   int                   `toml:"schema"`
 	Project  Project               `toml:"project"`
 	Version  Version               `toml:"version"`
 	Build    Build                 `toml:"build"`
@@ -128,6 +129,9 @@ func Load(dir string) (*File, error) {
 		return nil, fmt.Errorf("%s: unknown keys: %v", path, unknown)
 	}
 
+	if f.Schema != 0 && f.Schema != 1 {
+		return nil, fmt.Errorf("%s: unsupported schema %d (this bojo reads schema 1)", path, f.Schema)
+	}
 	if f.Project.Name == "" {
 		return nil, fmt.Errorf("%s: [project] name is required", path)
 	}

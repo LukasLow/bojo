@@ -23,9 +23,8 @@ type MojoRange struct {
 
 // Repo is the repository-level block.
 type Repo struct {
-	URL     string    `toml:"url"`
-	License string    `toml:"license"`
-	Mojo    MojoRange `toml:"mojo"`
+	URL     string `toml:"url"`
+	License string `toml:"license"`
 }
 
 // Linker describes what a package needs at link time and at run time.
@@ -71,6 +70,7 @@ type Pkg struct {
 
 // File is the parsed shape of one bojo.pkg.toml.
 type File struct {
+	Schema int            `toml:"schema"`
 	Repo   Repo           `toml:"repo"`
 	Import []string       `toml:"import"`
 	Pkg    map[string]Pkg `toml:"pkg"`

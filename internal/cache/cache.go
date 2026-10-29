@@ -53,12 +53,22 @@ func (s *Store) PythonEnv(version, key string) string {
 }
 
 // Src returns the checkout directory for one repository at one commit.
-func (s *Store) Src(repo, commit string) (string, error) {
+func (s *Store) Src(repo, tag, commit string) (string, error) {
 	norm, err := urlkey.Normalize(repo)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(s.Mojo(), "src", urlkey.Hash(norm), commit), nil
+	path, err := urlkey.Path(norm)
+	if err != nil {
+		return "", err
+	}
+	snapshot := short(commit)
+	if tag != "" {
+		// Tags are "<pkg>/<version>"; the slash would create a directory level
+		// and make the snapshot ambiguous, so it becomes an underscore.
+		snapshot = strings.ReplaceAll(tag, "/", "_") + "-" + short(commit)
+	}
+	return filepath.Join(s.Mojo(), "src", filepath.FromSlash(path)+"@"+snapshot), nil
 }
 
 // Tags lists the tags of a remote repository without cloning it.
@@ -151,8 +161,8 @@ func (s *Store) resolveCommit(repo, prefix string) (string, error) {
 
 // Ensure makes sure the checkout for (repo, commit) exists and returns its
 // directory. When wantTree is non-empty, the tree OID is verified.
-func (s *Store) Ensure(repo, commit, wantTree string) (string, error) {
-	dir, err := s.Src(repo, commit)
+func (s *Store) Ensure(repo, tag, commit, wantTree string) (string, error) {
+	dir, err := s.Src(repo, tag, commit)
 	if err != nil {
 		return "", err
 	}

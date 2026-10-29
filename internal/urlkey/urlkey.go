@@ -98,6 +98,23 @@ func Normalize(raw string) (string, error) {
 }
 
 // Hash returns the 12-hex cache key for a normalised URL.
+// Path turns a normalised URL into a filesystem path without scheme, i.e.
+// https://github.com/LukasLow/mojolib -> github.com/LukasLow/mojolib (D63).
+func Path(normalized string) (string, error) {
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", err
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("%q has no host", normalized)
+	}
+	p := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
+	if p == "" {
+		return "", fmt.Errorf("%q has no repository path", normalized)
+	}
+	return u.Host + "/" + p, nil
+}
+
 func Hash(normalized string) string {
 	sum := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(sum[:])[:12]

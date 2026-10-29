@@ -117,7 +117,7 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 		key := norm + "@" + commit
 		dir, ok := fetched[key]
 		if !ok {
-			dir, err = r.Store.Ensure(norm, commit, r.Locked[key])
+			dir, err = r.Store.Ensure(norm, tagName, commit, r.Locked[key])
 			if err != nil {
 				return nil, err
 			}
