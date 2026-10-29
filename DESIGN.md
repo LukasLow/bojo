@@ -245,7 +245,7 @@ project/
     modules/<route> -> cache/src/<…>/<module root>
     mojo-cache/                              MODULAR_CACHE_DIR
     state.json                               resolved objects, fingerprints
-  out/                                       result of `bojo build`
+  .out/                                       result of `bojo build`
 ```
 
 - **Integrity is checked while fetching**, not forever: clone the pinned commit,
@@ -307,7 +307,7 @@ project/.bojo/modules/
 | 7 | Precompile into `cache/obj` — **not** for pkgs with a `pre-build` hook (D40) | exit 3 |
 | 8 | Collect linker flags from every pkg (`[linker]`) | — |
 | 9 | `mojo build <entry> -I .bojo/modules -I . <flags>` with the toolchain from `[version] mojo` (D43/D47) | exit 3 |
-| 10 | Post-build: `strip`, closure into `out/lib`, relative RPATH at link time, re-sign on macOS | exit 3 |
+| 10 | Post-build: `strip`, closure into `.out/lib`, relative RPATH at link time, re-sign on macOS | exit 3 |
 
 `MODULAR_CACHE_DIR` = `.bojo/mojo-cache` (D15). Step 10 per platform:
 
@@ -326,7 +326,7 @@ Both build **outside** the project cache, in a temporary directory
 tmp/bojo-<rand>/
   src/<commit12>/      clone at the pinned commit
   obj/                 precompile
-  out/<cmd>            binary
+  .out/<cmd>            binary
 ```
 
 Flow: resolve → clone (verify tree) → hook gate → build → for `install` copy the
@@ -405,7 +405,7 @@ Blocked by 1 hook. Nothing was executed.
 | `bojo deps add-python <name>[@<ver>]` | add a Python package to `[deps.python]` |
 | `bojo deps check` | newer versions and CVEs (POST-V0.1, P21) |
 | `bojo remove <pkg>` / `bojo update [pkg]` | remove / re-resolve |
-| `bojo build [--locked]` | build into `out/` |
+| `bojo build [--locked]` | build into `.out/` |
 | `bojo run <url>#<pkg>@<ver>` | ephemeral build and run (§11a) |
 | `bojo install <url>#<pkg>@<ver>` | ephemeral build, binary to `~/.bojo/bin` (§11a) |
 | `bojo test` / `bojo fmt` / `bojo doc` | delegate to the driver |
@@ -419,7 +419,7 @@ Blocked by 1 hook. Nothing was executed.
 | `bojo toolchain remove <mojo\|python> <ver>` | delete an installed toolchain |
 | `bojo cache list` / `bojo cache clear` | show / clear the project cache |
 | `bojo allow <id>\|--json\|--list` | approve / show hooks |
-| `bojo clean [--all]` | remove `.bojo/` (`--all`: also `out/`) |
+| `bojo clean [--all]` | remove `.bojo/` (`--all`: also `.out/`) |
 | `bojo skill [<runtime>]` | print the agent skill as markdown (§19) |
 
 Exit codes:
@@ -437,7 +437,7 @@ Exit codes:
 
 | Mode | Description | Size / start (Linux, measured) |
 |---|---|---|
-| `dir` (default) | `out/` with binary + `lib/`, relative RPATH | 5.29 MB / 4–5 ms |
+| `dir` (default) | `.out/` with binary + `lib/`, relative RPATH | 5.29 MB / 4–5 ms |
 | `onefile` | one self-extracting file (C stub + `app.bin` + `lib/*`) | measured: 4.28 MB for the hello-world demo, start ~5 ms after first extraction |
 | `static` | does not exist (D18) | — |
 
@@ -523,9 +523,9 @@ Exit codes:
 | **D49** | toolchains are namespaced: `bojo toolchain mojo …`, `bojo toolchain python …` | one flat `toolchain install` | two runtimes with independent versions and stores |
 | **D50** | dependencies live under `bojo deps …` (`list`, `add`, `add-python`, `check`) | a top-level `get` | one namespace for everything that changes the manifest |
 | **D51** | the launcher sets `MOJO_PYTHON_LIBRARY` (absolute `libpython` path) in addition to `PYTHONHOME`/`PYTHONPATH` | rely on `PATH` discovery | research shows `MOJO_PYTHON_LIBRARY` is the primary lookup; a wrong `LIBDIR` ends in `dlopen("")` |
-| **D52** | the runtime closure is copied to `out/lib`, and the relative RPATH (`$ORIGIN/lib`, `@loader_path/lib`) is passed **at link time** | rewrite the RPATH afterwards | Mojo only passes `-Xlinker`; a relative entry can be appended, a `patchelf` step would be an extra dependency |
+| **D52** | the runtime closure is copied to `.out/lib`, and the relative RPATH (`$ORIGIN/lib`, `@loader_path/lib`) is passed **at link time** | rewrite the RPATH afterwards | Mojo only passes `-Xlinker`; a relative entry can be appended, a `patchelf` step would be an extra dependency |
 | **D53** | `onefile` compiles a **C stub at build time** with the host `cc` and appends `app.bin` + `lib/*` plus a 24-byte trailer | embed a prebuilt stub, or require Go at runtime | Mojo already needs a C driver, so no new dependency; the stub sets `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` and execs |
-| **D54** | with `[version] python`, the build emits `out/<name>` (C launcher) + `out/<name>.bin` + `out/python/{runtime,site-packages}` | symlink to the toolchain store | the launcher sets `PYTHONHOME`, `PYTHONPATH`, `MOJO_PYTHON_LIBRARY`; the store must not be required at runtime |
+| **D54** | with `[version] python`, the build emits `.out/<name>` (C launcher) + `.out/<name>.bin` + `.out/python/{runtime,site-packages}` | symlink to the toolchain store | the launcher sets `PYTHONHOME`, `PYTHONPATH`, `MOJO_PYTHON_LIBRARY`; the store must not be required at runtime |
 
 ## 21. Runtime requirements (verified)
 
@@ -631,7 +631,7 @@ install them.
 `output = "dir"` with `[python]`:
 
 ```
-out/
+.out/
   app            launcher stub: sets PYTHONHOME / PYTHONPATH, then execs app.bin
   app.bin        the Mojo binary
   lib/           Mojo runtime libraries (relative RPATH)

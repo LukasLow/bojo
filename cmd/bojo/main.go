@@ -375,7 +375,7 @@ func cmdClean(args []string) int {
 		removed++
 	}
 	if all {
-		if ok, err := removeIfExists(filepath.Join(dir, "out")); err != nil {
+		if ok, err := removeIfExists(filepath.Join(dir, ".out")); err != nil {
 			fail(err)
 			return exitUsage
 		} else if ok {
@@ -934,7 +934,7 @@ libs = [%q]
 		return exitBuild
 	}
 	entry := filepath.Join(p.Dir, p.Entry)
-	out := filepath.Join(tmp, "out", spec.pkg)
+	out := filepath.Join(tmp, ".out", spec.pkg)
 	version := ""
 	if cwdCfg, cerr := manifest.Load(cwd); cerr == nil {
 		version = cwdCfg.Version.Mojo

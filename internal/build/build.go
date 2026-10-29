@@ -252,7 +252,7 @@ func LinkerArgs(g *resolve.Graph) []string {
 
 // BinaryPath is where the build writes its result.
 func BinaryPath(projectDir, name string) string {
-	return filepath.Join(projectDir, "out", name)
+	return filepath.Join(projectDir, ".out", name)
 }
 
 // Mojo builds entry into out with the given mojo binary.
