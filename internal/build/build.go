@@ -134,15 +134,16 @@ func BinaryPath(projectDir, name string) string {
 	return filepath.Join(projectDir, "out", name)
 }
 
-// Mojo builds entry into out. ModulesDir must already be materialised.
-func Mojo(projectDir, entry, out, modulesDir string, extra []string) error {
+// Mojo builds entry into out with the given mojo binary. ModulesDir must already
+// be materialised.
+func Mojo(mojoBin, projectDir, entry, out, modulesDir string, extra []string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
 	args := []string{"build", entry, "-I", modulesDir, "-I", ".", "-o", out}
 	args = append(args, extra...)
 
-	cmd := exec.Command("mojo", args...)
+	cmd := exec.Command(mojoBin, args...)
 	cmd.Dir = projectDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

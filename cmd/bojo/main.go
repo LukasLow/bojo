@@ -21,6 +21,7 @@ import (
 	"github.com/LukasLow/bojo/internal/lock"
 	"github.com/LukasLow/bojo/internal/manifest"
 	"github.com/LukasLow/bojo/internal/resolve"
+	"github.com/LukasLow/bojo/internal/toolchain"
 	"github.com/LukasLow/bojo/skill"
 )
 
@@ -60,6 +61,8 @@ func run(args []string) int {
 		return exitOK
 	case "doctor":
 		return cmdDoctor()
+	case "toolchain":
+		return cmdToolchain(args[1:])
 	case "init", "new":
 		return cmdInit(args[1:])
 	case "get":
@@ -109,6 +112,8 @@ Usage:
   bojo allow <id>|--list          approve or list hooks
   bojo verify                     verify the lock against fresh checkouts
   bojo doctor                     check toolchain, compiler and PATH
+  bojo toolchain install <ver>    install a Mojo toolchain into ~/.bojo/mojo
+  bojo toolchain list             list installed toolchains
   bojo cache list|clear           inspect or clear .bojo/cache
   bojo clean [--all]              remove .bojo/ (--all: also out/)
   bojo skill [claude|codex|opencode]
@@ -118,6 +123,42 @@ Usage:
 }
 
 func fail(err error) { fmt.Fprintf(os.Stderr, "bojo: %v\n", err) }
+
+// cmdToolchain installs and lists Mojo toolchains (D43).
+func cmdToolchain(args []string) int {
+	if len(args) == 0 || args[0] == "list" {
+		versions, err := toolchain.List()
+		if err != nil {
+			fail(err)
+			return exitUsage
+		}
+		if len(versions) == 0 {
+			fmt.Println("no toolchain installed (run `bojo toolchain install 1.2.0`)")
+			return exitOK
+		}
+		for _, v := range versions {
+			fmt.Printf("  %s\n", v)
+		}
+		return exitOK
+	}
+	switch args[0] {
+	case "install":
+		if len(args) < 2 {
+			fail(errors.New("usage: bojo toolchain install <version>"))
+			return exitUsage
+		}
+		binary, err := toolchain.Install(args[1])
+		if err != nil {
+			fail(err)
+			return exitNetwork
+		}
+		fmt.Printf("installed mojo %s\n  %s\n", strings.TrimPrefix(args[1], "v"), binary)
+		return exitOK
+	default:
+		fail(fmt.Errorf("unknown toolchain command %q (install|list)", args[0]))
+		return exitUsage
+	}
+}
 
 // resolveExit maps a resolution failure: remote problems are exit 4, anything
 // else (bad manifest, unknown package, cycle) is a configuration error, exit 1.
@@ -448,6 +489,11 @@ func cmdBuild(args []string) int {
 		fail(errors.New("output = \"onefile\" is not implemented yet; use \"dir\""))
 		return exitUsage
 	}
+	mojoBin, err := toolchain.Resolve(cfg.Toolchain.Mojo)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
 
 	allow, err := hooks.Load(dir)
 	if err != nil {
@@ -479,7 +525,7 @@ func cmdBuild(args []string) int {
 		return exitBuild
 	}
 	out := build.BinaryPath(dir, cfg.Project.Name)
-	if err := build.Mojo(dir, cfg.Project.Entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
+	if err := build.Mojo(mojoBin, dir, cfg.Project.Entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
@@ -791,7 +837,16 @@ libs = [%q]
 	}
 	entry := filepath.Join(p.Dir, p.Entry)
 	out := filepath.Join(tmp, "out", spec.pkg)
-	if err := build.Mojo(p.Dir, entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
+	version := ""
+	if cwdCfg, cerr := manifest.Load(cwd); cerr == nil {
+		version = cwdCfg.Toolchain.Mojo
+	}
+	mojoBin, err := toolchain.Resolve(version)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	if err := build.Mojo(mojoBin, p.Dir, entry, out, modulesDir, build.LinkerArgs(g)); err != nil {
 		fail(fmt.Errorf("mojo build failed: %w", err))
 		return exitBuild
 	}
@@ -1020,28 +1075,7 @@ func ensureGitignore(dir, entry string) {
 
 // fingerprint turns `Mojo 1.2.0 (2016d0cd)` into `1.2.0-2016d0cd` (D35).
 func fingerprint(versionOutput string) string {
-	line := strings.TrimSpace(versionOutput)
-	fields := strings.Fields(line)
-	ver := ""
-	build := ""
-	for _, f := range fields {
-		t := strings.TrimSpace(f)
-		if strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
-			build = strings.Trim(t, "()")
-			continue
-		}
-		if t != "" && (t[0] >= '0' && t[0] <= '9') && ver == "" {
-			ver = t
-		}
-	}
-	switch {
-	case ver != "" && build != "":
-		return ver + "-" + build
-	case ver != "":
-		return ver
-	default:
-		return line
-	}
+	return toolchain.ParseFingerprint(versionOutput)
 }
 
 // toolchainFingerprint returns `1.2.0-2016d0cd`, or "" when mojo is absent.
