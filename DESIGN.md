@@ -307,7 +307,7 @@ project/.bojo/modules/
 | 7 | Precompile into `cache/obj` — **not** for pkgs with a `pre-build` hook (D40) | exit 3 |
 | 8 | Collect linker flags from every pkg (`[linker]`) | — |
 | 9 | `mojo build <entry> -I .bojo/modules -I . <flags>` with the toolchain from `[version] mojo` (D43/D47) | exit 3 |
-| 10 | Post-build hooks, `strip`, closure, RPATH, optional stub, re-sign ad hoc | exit 3 |
+| 10 | Post-build: `strip`, closure into `out/lib`, relative RPATH at link time, re-sign on macOS | exit 3 |
 
 `MODULAR_CACHE_DIR` = `.bojo/mojo-cache` (D15). Step 10 per platform:
 
@@ -523,6 +523,7 @@ Exit codes:
 | **D49** | toolchains are namespaced: `bojo toolchain mojo …`, `bojo toolchain python …` | one flat `toolchain install` | two runtimes with independent versions and stores |
 | **D50** | dependencies live under `bojo deps …` (`list`, `add`, `add-python`, `check`) | a top-level `get` | one namespace for everything that changes the manifest |
 | **D51** | the launcher sets `MOJO_PYTHON_LIBRARY` (absolute `libpython` path) in addition to `PYTHONHOME`/`PYTHONPATH` | rely on `PATH` discovery | research shows `MOJO_PYTHON_LIBRARY` is the primary lookup; a wrong `LIBDIR` ends in `dlopen("")` |
+| **D52** | the runtime closure is copied to `out/lib`, and the relative RPATH (`$ORIGIN/lib`, `@loader_path/lib`) is passed **at link time** | rewrite the RPATH afterwards | Mojo only passes `-Xlinker`; a relative entry can be appended, a `patchelf` step would be an extra dependency |
 
 ## 21. Runtime requirements (verified)
 

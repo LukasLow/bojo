@@ -570,14 +570,13 @@ func cmdBuild(args []string) int {
 			return exitLockFile
 		}
 	}
-	if cfg.Build.Output == "onefile" {
-		fail(errors.New("output = \"onefile\" is not implemented yet; use \"dir\""))
-		return exitUsage
-	}
 	mojoBin, err := toolchain.Resolve(cfg.Version.Mojo)
 	if err != nil {
 		fail(err)
 		return exitUsage
+	}
+	if cfg.Build.Output == "onefile" {
+		return buildOnefile(dir, cfg, g, mojoBin)
 	}
 
 	allow, err := hooks.Load(dir)

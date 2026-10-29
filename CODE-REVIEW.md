@@ -30,7 +30,7 @@ end and is a known gap, not an oversight.
 
 | # | Finding | Why it is open |
 |---|---|---|
-| O1 | Build step 10 is incomplete: no library closure, no `$ORIGIN` RPATH, no `codesign` | The onefile stub and closure need a real Mojo toolchain to test on macOS. Until then a build produces a bare binary. **Highest priority.** |
+| O1 | Build step 10 was incomplete: no library closure, no `$ORIGIN` RPATH, no `codesign` | **done (D52)**: closure is copied to `out/lib`, relative RPATH is passed at link time; verified by hiding the toolchain libraries and running the binary |
 | O2 | No `.mojoc` precompile, no `obj/` cache, no `<deps12>` | Needs the same toolchain. The spec keeps the layout; the code does not implement it yet. |
 | O3 | Route conflicts against project-local top-level directories are not checked (R1, second half) | Cheap to add, not yet done. |
 | O4 | Pre-release ordering is lexicographic (`beta.10 < beta.2`) | No pre-release tags exist yet; fix before the first `-rc`. |
