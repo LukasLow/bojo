@@ -438,7 +438,7 @@ Exit codes:
 | Mode | Description | Size / start (Linux, measured) |
 |---|---|---|
 | `dir` (default) | `out/` with binary + `lib/`, relative RPATH | 5.29 MB / 4–5 ms |
-| `onefile` | native stub with embedded libs, unpacks at start | 5.29 MB / 7–8 ms |
+| `onefile` | one self-extracting file (C stub + `app.bin` + `lib/*`) | measured: 4.28 MB for the hello-world demo, start ~5 ms after first extraction |
 | `static` | does not exist (D18) | — |
 
 | | Linux | macOS | Windows |
@@ -524,6 +524,7 @@ Exit codes:
 | **D50** | dependencies live under `bojo deps …` (`list`, `add`, `add-python`, `check`) | a top-level `get` | one namespace for everything that changes the manifest |
 | **D51** | the launcher sets `MOJO_PYTHON_LIBRARY` (absolute `libpython` path) in addition to `PYTHONHOME`/`PYTHONPATH` | rely on `PATH` discovery | research shows `MOJO_PYTHON_LIBRARY` is the primary lookup; a wrong `LIBDIR` ends in `dlopen("")` |
 | **D52** | the runtime closure is copied to `out/lib`, and the relative RPATH (`$ORIGIN/lib`, `@loader_path/lib`) is passed **at link time** | rewrite the RPATH afterwards | Mojo only passes `-Xlinker`; a relative entry can be appended, a `patchelf` step would be an extra dependency |
+| **D53** | `onefile` compiles a **C stub at build time** with the host `cc` and appends `app.bin` + `lib/*` plus a 24-byte trailer | embed a prebuilt stub, or require Go at runtime | Mojo already needs a C driver, so no new dependency; the stub sets `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` and execs |
 
 ## 21. Runtime requirements (verified)
 
