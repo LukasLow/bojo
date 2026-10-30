@@ -87,6 +87,21 @@ int main(int argc, char **argv) {
 
     if (mkdirs(dir) != 0 && access(dir, F_OK) != 0) { perror("mkdir"); return 1; }
 
+    /* A finished extraction is marked with the payload hash; every later start
+       skips the unpack entirely (D53). */
+    char marker[4352];
+    snprintf(marker, sizeof marker, "%s/.complete", dir);
+    FILE *done = fopen(marker, "r");
+    if (done) {
+        char seen[16] = {0};
+        if (fgets(seen, sizeof seen, done) && strncmp(seen, hash, 8) == 0) {
+            fclose(done);
+            fclose(f);
+            goto run;
+        }
+        fclose(done);
+    }
+
     fseek(f, (long)offset, SEEK_SET);
     char path[4352];
     while (ftell(f) < size - 24) {
@@ -119,6 +134,13 @@ int main(int argc, char **argv) {
     }
     fclose(f);
 
+    FILE *mk = fopen(marker, "w");
+    if (mk) {
+        fputs(hash, mk);
+        fclose(mk);
+    }
+
+run:
     snprintf(path, sizeof path, "%s/lib", dir);
 #ifdef __APPLE__
     setenv("DYLD_LIBRARY_PATH", path, 1);
