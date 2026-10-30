@@ -40,6 +40,7 @@ type Package struct {
 	Entry   string
 	Linker  pkg.Linker
 	Exclude []string
+	Docs    string
 	Hooks   map[string][][]string
 }
 
@@ -200,7 +201,7 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 				Name: p.Name, Path: modPath, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
 				Dir: p.Dir, Routes: p.Modules, DeclaredRoutes: p.Modules, Deps: deps,
 				Direct: j.direct, Kind: p.Kind, Entry: p.Entry,
-				Linker: p.Linker, Exclude: p.Exclude, Hooks: p.Hooks,
+				Linker: p.Linker, Exclude: p.Exclude, Docs: p.Docs, Hooks: p.Hooks,
 			}, j.alias); err != nil {
 				return nil, err
 			}
@@ -238,7 +239,7 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 					Name: dp.Name, Path: subPath, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
 					Dir: dp.Dir, Routes: dp.Modules, DeclaredRoutes: dp.Modules,
 					Deps: subDeps, Kind: dp.Kind, Entry: dp.Entry,
-					Linker: dp.Linker, Exclude: dp.Exclude, Hooks: dp.Hooks,
+					Linker: dp.Linker, Exclude: dp.Exclude, Docs: dp.Docs, Hooks: dp.Hooks,
 				}, nil); err != nil {
 					return nil, err
 				}
