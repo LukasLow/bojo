@@ -22,6 +22,7 @@ import (
 	"github.com/LukasLow/bojo/internal/manifest"
 	"github.com/LukasLow/bojo/internal/resolve"
 	"github.com/LukasLow/bojo/internal/toolchain"
+	"github.com/LukasLow/bojo/internal/urlkey"
 	"github.com/LukasLow/bojo/internal/vendor"
 	"github.com/LukasLow/bojo/skill"
 )
@@ -88,6 +89,8 @@ func run(args []string) int {
 		return cmdRun(args[1:], true)
 	case "cache":
 		return cmdCache(args[1:])
+	case "fmt":
+		return cmdFmt(args[1:])
 	case "docs":
 		return cmdDocs(args[1:])
 	case "remove":
@@ -510,8 +513,30 @@ func cmdGet(args []string) int {
 		return exitUsage
 	}
 	fmt.Printf("added %s@%s from %s\n", spec.pkg, spec.version, spec.repo)
+	printVendoredReadme(dir, spec.repo, spec.pkg)
 	fmt.Println("next: bojo update")
 	return exitOK
+}
+
+// printVendoredReadme shows what a package does right after it was added, but
+// only when the vendor tree already has it (D77).
+func printVendoredReadme(dir, repo, pkg string) {
+	norm, err := urlkey.Normalize(repo)
+	if err != nil {
+		return
+	}
+	modPath, err := urlkey.ModulePath(norm, pkg)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, ".vendor", filepath.FromSlash(strings.ReplaceAll(modPath, ".", "/")), "README.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	fmt.Println("── README ──────────────────────────────")
+	fmt.Print(renderMarkdown(string(raw)))
+	fmt.Println("────────────────────────────────────────")
 }
 
 func cmdUpdate(args []string) int {

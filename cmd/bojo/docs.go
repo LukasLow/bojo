@@ -3,10 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/LukasLow/bojo/internal/manifest"
 	"github.com/LukasLow/bojo/internal/resolve"
+	"github.com/LukasLow/bojo/internal/toolchain"
 )
 
 // ---------------------------------------------------------------------------
@@ -192,6 +195,54 @@ func inline(s string) string {
 	s = strings.ReplaceAll(s, "__", "")
 	s = strings.ReplaceAll(s, "`", "")
 	return s
+}
+
+// cmdFmt runs the formatter of the pinned toolchain over the given paths, or
+// over every Mojo file in the project.
+func cmdFmt(args []string) int {
+	dir, err := projectRoot()
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	cfg, err := manifest.Load(dir)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	mojoBin, err := toolchain.Resolve(cfg.Version.Mojo)
+	if err != nil {
+		fail(err)
+		return exitUsage
+	}
+	targets := args
+	if len(targets) == 0 {
+		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() && (d.Name() == ".bojo" || d.Name() == ".vendor" || d.Name() == ".out" || d.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			if !d.IsDir() && strings.HasSuffix(d.Name(), ".mojo") {
+				targets = append(targets, p)
+			}
+			return nil
+		})
+	}
+	if len(targets) == 0 {
+		fmt.Println("no Mojo files")
+		return exitOK
+	}
+	cmd := exec.Command(mojoBin, append([]string{"format"}, targets...)...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fail(err)
+		return exitBuild
+	}
+	return exitOK
 }
 
 // docsDir is where a package keeps its documentation.
