@@ -229,9 +229,11 @@ func indexRepo(norm, raw, sha, forced string, perPkg map[string]string, follow b
 
 		for name := range probe.Pkg {
 			version := forced
+			realTag := forced
 			atSHA := sha
 			if version == "" {
 				if tag, ok := perPkg[name]; ok {
+					realTag = tag
 					atSHA, err = refSHA(raw, tag)
 					if err != nil {
 						return nil, err
@@ -265,7 +267,7 @@ func indexRepo(norm, raw, sha, forced string, perPkg map[string]string, follow b
 				}
 			}
 			out = append(out, indexEntry{
-				Path: modPath, Pkg: name, Dir: imp, Version: version, Tag: version,
+				Path: modPath, Pkg: name, Dir: imp, Version: version, Tag: realTag,
 				Description: p.Description, Keywords: p.Keywords, License: p.License,
 				Homepage: p.Homepage, Readme: p.Readme, Docs: p.Docs,
 				Hooks: hookNames(p.Hooks), FFI: len(p.Linker.FFI) > 0,
