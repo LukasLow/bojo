@@ -62,15 +62,16 @@ func cmpInt(a, b int) int {
 // ParseTag parses `<pkg>/vX.Y.Z[-pre]` for the given package name.
 // A tag without the package prefix, or with more than one slash, is rejected.
 func ParseTag(raw, pkg string) (Version, error) {
-	prefix := pkg + "/"
-	if !strings.HasPrefix(raw, prefix) {
-		return Version{}, fmt.Errorf("tag %q does not start with %q", raw, prefix)
+	for _, sep := range []string{pkg + "@", pkg + "/"} {
+		if strings.HasPrefix(raw, sep) {
+			rest := strings.TrimPrefix(raw, sep)
+			if strings.ContainsAny(rest, "/@") {
+				return Version{}, fmt.Errorf("tag %q has more than one separator", raw)
+			}
+			return ParseVersion(rest)
+		}
 	}
-	rest := strings.TrimPrefix(raw, prefix)
-	if strings.Contains(rest, "/") {
-		return Version{}, fmt.Errorf("tag %q has more than one slash", raw)
-	}
-	return ParseVersion(rest)
+	return Version{}, fmt.Errorf("tag %q does not start with %q", raw, pkg+"@")
 }
 
 // ParseVersion parses `vX.Y.Z[-pre]`.

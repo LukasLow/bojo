@@ -446,7 +446,7 @@ func cmdCache(args []string) int {
 
 func cmdGet(args []string) int {
 	if len(args) == 0 {
-		fail(errors.New("usage: bojo get <url>@<version> [--lib <pkg>[,<pkg>...]] [--as <name>]"))
+		fail(errors.New("usage: bojo get <url>#<pkg>@<version> [--as <name>]"))
 		return exitUsage
 	}
 	spec, err := parseSpec(args[0])
@@ -1113,22 +1113,26 @@ func (s spec) tag() string { return "v" + strings.TrimPrefix(s.version, "v") }
 // libs is the package selection; --lib may name several.
 func (s spec) libs() []string { return s.pkgs }
 
-// parseSpec splits `url@<pkg>/<version>`: the last @ separates the repository
-// from the tag, and the tag names the package it belongs to (D6, D70).
+// pkgTag is the tag that names the package and its version (D79).
+func (s spec) pkgTag() string { return s.pkg + "@" + s.tag() }
+
+// parseSpec splits `url#pkg@version` (D80): the URL is the address, the
+// fragment selects the package and its version.
 func parseSpec(raw string) (spec, error) {
-	at := strings.LastIndex(raw, "@")
+	hash := strings.LastIndex(raw, "#")
+	if hash < 0 {
+		return spec{}, fmt.Errorf("%q is missing #<pkg>@<version> (example: https://github.com/owner/repo#pkg@v0.0.1)", raw)
+	}
+	repo, rest := raw[:hash], raw[hash+1:]
+	at := strings.LastIndex(rest, "@")
 	if at < 0 {
-		return spec{}, fmt.Errorf("%q is missing @<pkg>/<version> (example: https://github.com/owner/repo@pkg/v0.0.1)", raw)
+		return spec{}, fmt.Errorf("%q is missing @<version>", raw)
 	}
-	repo, ref := raw[:at], raw[at+1:]
-	pkgName := ""
-	if slash := strings.Index(ref, "/"); slash > 0 {
-		pkgName, ref = ref[:slash], ref[slash+1:]
-	}
-	if repo == "" || ref == "" {
+	pkgName, ver := rest[:at], rest[at+1:]
+	if repo == "" || pkgName == "" || ver == "" {
 		return spec{}, fmt.Errorf("%q is not a valid package reference", raw)
 	}
-	return spec{repo: repo, pkg: pkgName, version: ref}, nil
+	return spec{repo: repo, pkg: pkgName, version: ver}, nil
 }
 
 func writeLock(dir, mojoFingerprint string, g *resolve.Graph) error {
@@ -1175,7 +1179,7 @@ func appendDepFrom(dir string, s spec, alias string) error {
 	var b strings.Builder
 	b.WriteString("\n[[deps-from]]\n")
 	fmt.Fprintf(&b, "repo = %q\n", s.repo)
-	fmt.Fprintf(&b, "tag  = %q\n", s.tag())
+	fmt.Fprintf(&b, "tag  = %q\n", s.pkgTag())
 	libs := s.libs()
 	quoted := make([]string, len(libs))
 	for i, l := range libs {

@@ -127,9 +127,8 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 			// for repositories that still use per-package tags.
 			pkgForTag := ""
 			ref := j.tag
-			if i := strings.Index(ref, "/"); i > 0 {
-				pkgForTag = ref[:i]
-				ref = ref[i+1:]
+			if i := strings.IndexAny(ref, "@/"); i > 0 {
+				pkgForTag, ref = ref[:i], ref[i+1:]
 			}
 			tagName, commit, err = r.Store.ResolveRef(norm, pkgForTag, ref)
 		}

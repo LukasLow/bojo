@@ -105,29 +105,31 @@ func cmdRepoIndex(args []string) int {
 		fail(err)
 		return exitUsage
 	}
+
+	// Tags name their package (D79); the highest one per package wins.
+	perPkg := map[string]string{}
 	if ref == "" {
-		ref, err = latestTag(raw)
+		perPkg, err = tagsByPackage(raw)
 		if err != nil {
 			fail(err)
 			return exitNetwork
 		}
 	}
 
-	// Fetch by commit, not by tag: a raw endpoint caches a tag for minutes,
-	// a commit is immutable and therefore exact.
-	sha, err := refSHA(raw, ref)
+	base := ref
+	if base == "" {
+		base = "HEAD"
+	}
+	sha, err := refSHA(raw, base)
 	if err != nil {
 		fail(err)
 		return exitNetwork
 	}
-	entries, err := indexRepo(norm, sha, follow, 0)
+
+	entries, err := indexRepo(norm, raw, sha, ref, perPkg, follow, 0)
 	if err != nil {
 		fail(err)
 		return exitNetwork
-	}
-	for i := range entries {
-		entries[i].Version = ref
-		entries[i].Tag = ref
 	}
 	enc := json.NewEncoder(os.Stdout)
 	for _, e := range entries {
@@ -139,17 +141,53 @@ func cmdRepoIndex(args []string) int {
 	return exitOK
 }
 
-// indexRepo reads the root manifest, then every package manifest.
-func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
-	body, err := fetchRaw(norm, ref, "bojo.pkg.toml")
+// tagsByPackage maps a package name to its highest version tag.
+func tagsByPackage(raw string) (map[string]string, error) {
+	out, err := exec.Command("git", "ls-remote", "--tags", "--refs", raw).Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s@%s has no readable bojo.pkg.toml: %w", norm, ref, err)
+		return nil, fmt.Errorf("listing tags of %s: %w", raw, err)
+	}
+	best := map[string]tagVersion{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		t := strings.TrimPrefix(fields[1], "refs/tags/")
+		at := strings.IndexByte(t, '@')
+		if at <= 0 {
+			continue
+		}
+		pkg, ver := t[:at], t[at+1:]
+		cand := tagVersion{raw: t, version: ver}
+		if prev, ok := best[pkg]; !ok || cand.version > prev.version {
+			best[pkg] = cand
+		}
+	}
+	res := map[string]string{}
+	for pkg, tv := range best {
+		res[pkg] = tv.raw
+	}
+	return res, nil
+}
+
+type tagVersion struct {
+	raw     string
+	version string
+}
+
+// indexRepo reads the root manifest, then every package manifest at the commit
+// that its own tag points to.
+func indexRepo(norm, raw, sha, forced string, perPkg map[string]string, follow bool, depth int) ([]indexEntry, error) {
+	body, err := fetchRaw(norm, sha, "bojo.pkg.toml")
+	if err != nil {
+		return nil, fmt.Errorf("%s has no readable bojo.pkg.toml: %w", norm, err)
 	}
 	var root struct {
 		Import []string `toml:"import"`
 	}
 	if err := toml.Unmarshal(body, &root); err != nil {
-		return nil, fmt.Errorf("%s@%s: %w", norm, ref, err)
+		return nil, fmt.Errorf("%s: %w", norm, err)
 	}
 
 	type linker struct {
@@ -173,21 +211,43 @@ func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
 		} `toml:"deps-from"`
 	}
 	var out []indexEntry
+	cache := map[string]string{}
 
 	for _, imp := range root.Import {
 		imp = strings.TrimSuffix(strings.TrimPrefix(imp, "./"), "/")
 		path := filepath.ToSlash(filepath.Join(imp, "bojo.pkg.toml"))
-		raw, err := fetchRaw(norm, ref, path)
+		rawManifest, err := fetchRaw(norm, sha, path)
 		if err != nil {
-			return nil, fmt.Errorf("%s@%s: %w", norm, ref, err)
+			return nil, fmt.Errorf("%s: %w", norm, err)
 		}
-		var file struct {
+		var probe struct {
 			Pkg map[string]pkgEntry `toml:"pkg"`
 		}
-		if err := toml.Unmarshal(raw, &file); err != nil {
-			return nil, fmt.Errorf("%s@%s: %s: %w", norm, ref, path, err)
+		if err := toml.Unmarshal(rawManifest, &probe); err != nil {
+			return nil, fmt.Errorf("%s: %s: %w", norm, path, err)
 		}
-		for name, p := range file.Pkg {
+
+		for name := range probe.Pkg {
+			version := forced
+			atSHA := sha
+			if version == "" {
+				if tag, ok := perPkg[name]; ok {
+					atSHA, err = refSHA(raw, tag)
+					if err != nil {
+						return nil, err
+					}
+					version = tag[strings.IndexByte(tag, '@')+1:]
+					if atSHA != sha {
+						if m, err := fetchRaw(norm, atSHA, path); err == nil {
+							rawManifest = m
+							_ = toml.Unmarshal(m, &probe)
+						}
+					}
+				} else {
+					version = "unreleased"
+				}
+			}
+			p := probe.Pkg[name]
 			modPath, err := urlkey.ModulePath(norm, name)
 			if err != nil {
 				return nil, err
@@ -205,7 +265,7 @@ func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
 				}
 			}
 			out = append(out, indexEntry{
-				Path: modPath, Pkg: name, Dir: imp, Version: ref, Tag: ref,
+				Path: modPath, Pkg: name, Dir: imp, Version: version, Tag: version,
 				Description: p.Description, Keywords: p.Keywords, License: p.License,
 				Homepage: p.Homepage, Readme: p.Readme, Docs: p.Docs,
 				Hooks: hookNames(p.Hooks), FFI: len(p.Linker.FFI) > 0,
@@ -217,11 +277,19 @@ func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
 					if err != nil {
 						continue
 					}
-					sub, err := latestTag(d.Repo)
+					if _, seen := cache[dn]; seen {
+						continue
+					}
+					cache[dn] = "1"
+					subTags, err := tagsByPackage(d.Repo)
 					if err != nil {
 						continue
 					}
-					nested, err := indexRepo(dn, sub, false, depth+1)
+					subHead, err := refSHA(d.Repo, "HEAD")
+					if err != nil {
+						continue
+					}
+					nested, err := indexRepo(dn, d.Repo, subHead, "", subTags, false, depth+1)
 					if err != nil {
 						continue
 					}
