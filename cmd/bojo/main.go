@@ -1202,30 +1202,47 @@ func readPending(dir string) ([]hooks.Entry, error) {
 	return entries, nil
 }
 
-// insertIntoTable appends one line at the end of an existing table, before the
-// next section header. Comments and formatting stay untouched.
-func insertIntoTable(text, header, line string) (string, error) {
-	idx := strings.Index(text, header)
-	if idx < 0 {
-		return "", fmt.Errorf("table %s not found", header)
+// insertIntoTable upserts one key inside an existing table: the line is
+// replaced when the key is already there, otherwise appended before the next
+// section header. Comments, order and formatting survive.
+func insertIntoTable(text, header, key, line string) (string, bool, error) {
+	lines := strings.Split(text, "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == header {
+			start = i
+			break
+		}
 	}
-	start := strings.IndexByte(text[idx:], '\n')
 	if start < 0 {
-		return text + "\n" + line, nil
+		return text, false, nil
 	}
-	start += idx + 1
-	end := len(text)
-	for i := start; i < len(text); i++ {
-		if text[i] == '[' && i > 0 && text[i-1] == '\n' {
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "[") {
 			end = i
 			break
 		}
 	}
-	prefix := text[:end]
-	if prefix != "" && !strings.HasSuffix(prefix, "\n") {
-		prefix += "\n"
+	for i := start + 1; i < end; i++ {
+		t := strings.TrimSpace(lines[i])
+		eq := strings.IndexByte(t, '=')
+		if eq <= 0 {
+			continue
+		}
+		name := strings.Trim(strings.TrimSpace(t[:eq]), `"`)
+		if name == key {
+			lines[i] = line
+			return strings.Join(lines, "\n"), true, nil
+		}
 	}
-	return prefix + line + "\n" + text[end:], nil
+	out := append([]string{}, lines[:end]...)
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	out = append(out, line, "")
+	out = append(out, lines[end:]...)
+	return strings.Join(out, "\n"), true, nil
 }
 
 func appendDepFrom(dir string, sp spec, alias string) error {
@@ -1235,16 +1252,13 @@ func appendDepFrom(dir string, sp spec, alias string) error {
 		return err
 	}
 	header := fmt.Sprintf("[deps-from.%q]", sp.repo)
-	line := fmt.Sprintf("%s = %q\n", sp.pkg, sp.tag())
+	line := fmt.Sprintf("%q = %q", sp.pkg, sp.tag())
 	if alias != "" {
-		line = fmt.Sprintf("%s = { version = %q, as = %q }\n", sp.pkg, sp.tag(), alias)
+		line = fmt.Sprintf("%q = { version = %q, as = %q }", sp.pkg, sp.tag(), alias)
 	}
-	if strings.Contains(string(raw), header) {
-		// Insert into the existing table, keeping every comment and the order.
-		updated, err := insertIntoTable(string(raw), header, line)
-		if err != nil {
-			return err
-		}
+	if updated, found, err := insertIntoTable(string(raw), header, sp.pkg, line); err != nil {
+		return err
+	} else if found {
 		return os.WriteFile(path, []byte(updated), 0o644)
 	}
 	var b strings.Builder
