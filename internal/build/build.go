@@ -140,8 +140,9 @@ func Bundle(binary string) ([]string, error) {
 	}
 
 	var bundled []string
-	for name, src := range libs {
-		if systemLibs[name] {
+	for installName, src := range libs {
+		name := filepath.Base(installName)
+		if systemLibs[name] || isSystemPath(src) {
 			continue
 		}
 		dst := filepath.Join(libDir, name)
@@ -162,6 +163,65 @@ func Bundle(binary string) ([]string, error) {
 	return bundled, nil
 }
 
+// isSystemPath reports whether a library belongs to the OS. Checking the path
+// rather than a name allowlist keeps libc++, libobjc and friends out of the
+// bundle on macOS.
+func isSystemPath(p string) bool {
+	return strings.HasPrefix(p, "/usr/lib/") || strings.HasPrefix(p, "/System/")
+}
+
+// darwinRPaths reads the LC_RPATH entries of a Mach-O.
+func darwinRPaths(binary string) []string {
+	out, err := exec.Command("otool", "-l", binary).Output()
+	if err != nil {
+		return nil
+	}
+	var rpaths []string
+	lines := strings.Split(string(out), "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "cmd LC_RPATH") {
+			continue
+		}
+		for j := i; j < len(lines) && j < i+4; j++ {
+			t := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(t, "path ") {
+				f := strings.Fields(t)
+				if len(f) >= 2 {
+					rpaths = append(rpaths, f[1])
+				}
+				break
+			}
+		}
+	}
+	return rpaths
+}
+
+// resolveDarwin turns an install name into a path on this machine. Mojo emits
+// @rpath entries, so the LC_RPATH list decides where a dependency lives.
+func resolveDarwin(installName string, rpaths []string, binDir string) (string, error) {
+	expand := func(p string) string {
+		p = strings.ReplaceAll(p, "@loader_path", binDir)
+		p = strings.ReplaceAll(p, "@executable_path", binDir)
+		return p
+	}
+	switch {
+	case strings.HasPrefix(installName, "/"):
+		return installName, nil
+	case strings.HasPrefix(installName, "@rpath/"):
+		rest := strings.TrimPrefix(installName, "@rpath/")
+		for _, rp := range rpaths {
+			candidate := filepath.Join(expand(rp), rest)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+		return "", fmt.Errorf("%s: no LC_RPATH resolves it", installName)
+	case strings.HasPrefix(installName, "@loader_path"), strings.HasPrefix(installName, "@executable_path"):
+		return expand(installName), nil
+	}
+	return "", fmt.Errorf("%s is neither absolute nor @rpath-based", installName)
+}
+
 // linkedLibraries returns library name -> absolute path.
 func linkedLibraries(binary string) (map[string]string, error) {
 	out := map[string]string{}
@@ -170,12 +230,19 @@ func linkedLibraries(binary string) (map[string]string, error) {
 		if err != nil {
 			return out, fmt.Errorf("otool -L: %w", err)
 		}
+		rpaths := darwinRPaths(binary)
+		binDir := filepath.Dir(binary)
 		for _, line := range strings.Split(string(raw), "\n")[1:] {
 			fields := strings.Fields(strings.TrimSpace(line))
-			if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+			if len(fields) == 0 {
 				continue
 			}
-			out[filepath.Base(fields[0])] = fields[0]
+			installName := fields[0]
+			resolved, err := resolveDarwin(installName, rpaths, binDir)
+			if err != nil {
+				return out, err
+			}
+			out[installName] = resolved
 		}
 		return out, nil
 	}
@@ -211,11 +278,12 @@ func linkedLibraries(binary string) (map[string]string, error) {
 
 // rewriteMacOS points the Mach-O at @loader_path/lib and re-signs it.
 func rewriteMacOS(binary string, libs map[string]string) error {
-	for name, src := range libs {
-		if systemLibs[name] {
+	for installName, src := range libs {
+		name := filepath.Base(installName)
+		if systemLibs[name] || isSystemPath(src) {
 			continue
 		}
-		args := []string{"-change", src, "@loader_path/lib/" + name, binary}
+		args := []string{"-change", installName, "@loader_path/lib/" + name, binary}
 		if out, err := exec.Command("install_name_tool", args...).CombinedOutput(); err != nil {
 			return fmt.Errorf("install_name_tool %s: %v: %s", name, err, strings.TrimSpace(string(out)))
 		}
