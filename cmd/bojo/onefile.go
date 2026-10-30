@@ -69,7 +69,9 @@ func buildOnefile(dir string, cfg *manifest.File, g *resolve.Graph, mojoBin stri
 		fail(err)
 		return exitBuild
 	}
-	trees := map[string]string{"lib": filepath.Join(work, "lib")}
+	// The library directory is passed separately; listing it as a tree again
+	// would pack every .so twice.
+	trees := map[string]string{}
 	if _, err := os.Stat(filepath.Join(work, "data")); err == nil {
 		trees["data"] = filepath.Join(work, "data")
 	}
