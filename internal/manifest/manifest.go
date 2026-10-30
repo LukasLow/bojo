@@ -188,7 +188,7 @@ func Load(dir string) (*File, error) {
 			if strings.TrimSpace(name) == "" {
 				return nil, fmt.Errorf("%s: deps-from %q has an empty package name", path, repo)
 			}
-			if n := len(spec.Alias); spec.Alias != "" && (strings.ContainsAny(spec.Alias, " \t/\\:") || n == 0) {
+			if n := len(spec.Alias); spec.Alias != "" && (strings.ContainsAny(spec.Alias, " \t/.\\:") || n == 0) {
 				return nil, fmt.Errorf("%s: alias %q for %s is not a plain name", path, spec.Alias, name)
 			}
 		}

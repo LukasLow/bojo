@@ -149,6 +149,9 @@ func LoadTree(dir string) (*Tree, error) {
 			if p.Kind == "cmd" && p.Entry == "" {
 				return fmt.Errorf("%s: cmd %q needs an entry", abs, name)
 			}
+			if strings.ContainsAny(name, "./\\ :") || name == "" {
+				return fmt.Errorf("%s: package name %q must be a plain identifier", abs, name)
+			}
 			if p.Kind == "" && len(p.Modules) == 0 {
 				return fmt.Errorf("%s: library %q needs at least one modules route", abs, name)
 			}

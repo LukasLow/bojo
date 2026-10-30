@@ -55,6 +55,17 @@ func Normalize(raw string) (string, error) {
 		return "", fmt.Errorf("repository URL %q has no host", raw)
 	}
 
+	// A repository path becomes a directory below the cache; no segment may be
+	// empty, "." or ".." (D63).
+	for _, seg := range strings.Split(strings.Trim(u.Path, "/"), "/") {
+		switch {
+		case seg == "":
+			continue // doubled slashes are cleaned by Normalize
+		case seg == "." || seg == "..":
+			return "", fmt.Errorf("repository URL %q has a forbidden path segment %q", raw, seg)
+		}
+	}
+
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
 	case "git", "ssh":
