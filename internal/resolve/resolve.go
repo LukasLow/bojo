@@ -246,6 +246,53 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 			}
 		}
 
+		// Close over in-repo dependencies: A -> B -> C must put C in the graph
+		// too, otherwise B cannot be built (R4).
+		for changed := true; changed; {
+			changed = false
+			for _, dp := range pt.Packages {
+				modPath, err := urlkey.ModulePath(norm, dp.Name)
+				if err != nil {
+					return nil, err
+				}
+				if _, present := g.Packages[modPath]; !present {
+					continue
+				}
+				var subDeps []string
+				for _, d := range dp.Deps {
+					subDeps = append(subDeps, d.InRepo)
+				}
+				for _, ref := range subDeps {
+					child, ok := pt.Packages[ref]
+					if !ok {
+						continue
+					}
+					childPath, err := urlkey.ModulePath(norm, child.Name)
+					if err != nil {
+						return nil, err
+					}
+					if _, present := g.Packages[childPath]; present {
+						continue
+					}
+					var childDeps []string
+					for _, d := range child.Deps {
+						if p2, err := urlkey.ModulePath(norm, d.InRepo); err == nil {
+							childDeps = append(childDeps, p2)
+						}
+					}
+					if err := g.add(Package{
+						Name: child.Name, Path: childPath, Repo: norm, Commit: commit, Tag: tagName, Tree: tree,
+						Dir: child.Dir, Routes: child.Modules, DeclaredRoutes: child.Modules,
+						Deps: childDeps, Kind: child.Kind, Entry: child.Entry,
+						Linker: child.Linker, Exclude: child.Exclude, Docs: child.Docs, Hooks: child.Hooks,
+					}, nil); err != nil {
+						return nil, err
+					}
+					changed = true
+				}
+			}
+		}
+
 		// A repository's own dependencies are enqueued once, never per package:
 		// otherwise A->B->A grows the queue forever (review blocker).
 		if !expanded[key] {
