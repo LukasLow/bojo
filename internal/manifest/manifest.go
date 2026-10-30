@@ -45,6 +45,33 @@ type Dep struct {
 	Path string `toml:"path"`
 }
 
+// DepSpec is one dependency: a version and an optional local alias.
+type DepSpec struct {
+	Version string
+	Alias   string
+}
+
+// UnmarshalTOML accepts "v1.2.3" or { version = "v1.2.3", as = "name" }.
+func (d *DepSpec) UnmarshalTOML(v any) error {
+	switch t := v.(type) {
+	case string:
+		d.Version = t
+	case map[string]any:
+		if s, ok := t["version"].(string); ok {
+			d.Version = s
+		}
+		if s, ok := t["as"].(string); ok {
+			d.Alias = s
+		}
+	default:
+		return fmt.Errorf("a dependency must be a version string or a table")
+	}
+	return nil
+}
+
+// DepsFrom maps a repository URL to its packages: repo -> package -> spec.
+type DepsFrom map[string]map[string]DepSpec
+
 // DepFrom is one repository at one version, providing one or more packages.
 type DepFrom struct {
 	Repo   string            `toml:"repo"`
@@ -97,7 +124,7 @@ type File struct {
 	Version  Version               `toml:"version"`
 	Build    Build                 `toml:"build"`
 	Deps     DepsTable             `toml:"deps"`
-	DepsFrom []DepFrom             `toml:"deps-from"`
+	DepsFrom DepsFrom              `toml:"deps-from"`
 	Hooks    map[string][][]string `toml:"hooks"`
 	Alias    map[string]string     `toml:"alias"`
 	Linker   Linker                `toml:"linker"`
@@ -121,8 +148,8 @@ func Load(dir string) (*File, error) {
 	}
 	var unknown []string
 	for _, k := range md.Undecoded() {
-		if strings.HasPrefix(k.String(), "deps.") {
-			continue
+		if strings.HasPrefix(k.String(), "deps.") || strings.HasPrefix(k.String(), "deps-from.") {
+			continue // handled by the custom unmarshalers
 		}
 		unknown = append(unknown, k.String())
 	}
@@ -153,18 +180,17 @@ func Load(dir string) (*File, error) {
 		}
 	}
 
-	for i, d := range f.DepsFrom {
-		if d.Repo == "" {
-			return nil, fmt.Errorf("%s: deps-from[%d] needs a repo", path, i)
+	for repo, pkgs := range f.DepsFrom {
+		if strings.TrimSpace(repo) == "" {
+			return nil, fmt.Errorf("%s: a deps-from entry needs a repository", path)
 		}
-		if d.Tag == "" && d.Commit == "" {
-			return nil, fmt.Errorf("%s: deps-from[%d] (%s) needs a tag or a commit", path, i, d.Repo)
-		}
-		if d.Tag != "" && d.Commit != "" {
-			return nil, fmt.Errorf("%s: deps-from[%d] (%s) has both tag and commit; pick one", path, i, d.Repo)
-		}
-		if len(d.Libs) == 0 {
-			return nil, fmt.Errorf("%s: deps-from[%d] (%s) needs at least one entry in libs", path, i, d.Repo)
+		for name, spec := range pkgs {
+			if strings.TrimSpace(name) == "" {
+				return nil, fmt.Errorf("%s: deps-from %q has an empty package name", path, repo)
+			}
+			if n := len(spec.Alias); spec.Alias != "" && (strings.ContainsAny(spec.Alias, " \t/\\:") || n == 0) {
+				return nil, fmt.Errorf("%s: alias %q for %s is not a plain name", path, spec.Alias, name)
+			}
 		}
 	}
 

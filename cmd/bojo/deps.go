@@ -57,12 +57,18 @@ func depsList() int {
 		fmt.Println("no dependencies")
 		return exitOK
 	}
-	for _, d := range cfg.DepsFrom {
-		ver := d.Tag
-		if ver == "" {
-			ver = d.Commit
+	for repo, pkgs := range cfg.DepsFrom {
+		for name, spec := range pkgs {
+			ver := spec.Version
+			if ver == "" {
+				ver = "latest"
+			}
+			line := fmt.Sprintf("pkg    %s  %s  %s", name, repo, ver)
+			if spec.Alias != "" {
+				line += "  as " + spec.Alias
+			}
+			fmt.Println(line)
 		}
-		fmt.Printf("pkg    %s  %s  %s\n", strings.Join(d.Libs, ","), d.Repo, ver)
 	}
 	for name, d := range cfg.Deps.Local {
 		fmt.Printf("local  %s  %s\n", name, d.Path)

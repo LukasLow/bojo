@@ -484,14 +484,13 @@ func cmdGet(args []string) int {
 		fail(err)
 		return exitUsage
 	}
-	for _, d := range cfg.DepsFrom {
-		if d.Repo == spec.repo && d.Tag == spec.tag() {
-			for _, l := range d.Libs {
-				if l == spec.pkg {
-					fmt.Printf("already declared: %s@%s\n", spec.pkg, spec.version)
-					return exitOK
-				}
-			}
+	for repo, pkgs := range cfg.DepsFrom {
+		if repo != spec.repo {
+			continue
+		}
+		if existing, ok := pkgs[spec.pkg]; ok && existing.Version == spec.tag() {
+			fmt.Printf("already declared: %s@%s\n", spec.pkg, spec.version)
+			return exitOK
 		}
 	}
 
@@ -1174,20 +1173,25 @@ func readPending(dir string) ([]hooks.Entry, error) {
 	return entries, nil
 }
 
-func appendDepFrom(dir string, s spec, alias string) error {
+func appendDepFrom(dir string, sp spec, alias string) error {
 	path := filepath.Join(dir, "bojo.toml")
-	var b strings.Builder
-	b.WriteString("\n[[deps-from]]\n")
-	fmt.Fprintf(&b, "repo = %q\n", s.repo)
-	fmt.Fprintf(&b, "tag  = %q\n", s.pkgTag())
-	libs := s.libs()
-	quoted := make([]string, len(libs))
-	for i, l := range libs {
-		quoted[i] = fmt.Sprintf("%q", l)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(&b, "libs = [%s]\n", strings.Join(quoted, ", "))
+	header := fmt.Sprintf("[deps-from.%q]", sp.repo)
+	if strings.Contains(string(raw), header) {
+		return fmt.Errorf("%s already declares %s; add %q to that table by hand", path, sp.repo, sp.pkg)
+	}
+	var b strings.Builder
+	if !strings.HasSuffix(string(raw), "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n" + header + "\n")
 	if alias != "" {
-		fmt.Fprintf(&b, "alias = { %s = %q }\n", s.pkg, alias)
+		fmt.Fprintf(&b, "%s = { version = %q, as = %q }\n", sp.pkg, sp.tag(), alias)
+	} else {
+		fmt.Fprintf(&b, "%s = %q\n", sp.pkg, sp.tag())
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {

@@ -51,8 +51,8 @@ directory. Libraries always write this full path; only the end user may shorten
 it, and only in `bojo.toml`:
 
 ```toml
-[alias]
-cprint = "printer"
+[deps-from."https://github.com/LukasLow/bojo_demo_pkg"]
+cprint = { version = "v0.0.1", as = "printer" }
 ```
 
 ```mojo
@@ -106,11 +106,14 @@ bojo get https://github.com/LukasLow/example_pkg@v0.1.0
 ```
 
 ```toml
-[[deps-from]]
-repo = "https://github.com/LukasLow/example_pkg"
-tag  = "v0.1.0"
-libs = ["addition"]
+[deps-from."https://github.com/LukasLow/example_pkg"]
+addition = "v0.1.0"
+other    = { version = "v0.2.0", as = "short" }
 ```
+
+The section is keyed by repository; each key is a package, each value its
+version. `as` gives the package a local alias, and only the project may do
+that.
 
 ## Native code (C and Rust)
 

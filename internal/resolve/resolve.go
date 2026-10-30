@@ -95,15 +95,24 @@ func (r *Resolver) Resolve(cfg *manifest.File) (*Graph, error) {
 	}
 
 	var queue []job
-	for _, d := range cfg.DepsFrom {
-		alias := map[string]string{}
-		for k, v := range d.Alias {
-			alias[k] = v
+	for repo, pkgs := range cfg.DepsFrom {
+		for name, spec := range pkgs {
+			version := spec.Version
+			if version == "" {
+				version = "latest"
+			}
+			alias := map[string]string{}
+			if spec.Alias != "" {
+				alias[name] = spec.Alias
+			}
+			for k, v := range cfg.Alias {
+				alias[k] = v
+			}
+			queue = append(queue, job{
+				direct: true, repo: repo, tag: name + "@" + version,
+				libs: []string{name}, alias: alias,
+			})
 		}
-		for k, v := range cfg.Alias {
-			alias[k] = v
-		}
-		queue = append(queue, job{direct: true, repo: d.Repo, tag: d.Tag, commit: d.Commit, libs: d.Libs, alias: alias})
 	}
 
 	fetched := map[string]string{} // "<repo>@<commit>" -> checkout dir
