@@ -68,6 +68,7 @@ type Pkg struct {
 	Keywords    []string              `toml:"keywords"`
 	License     string                `toml:"license"`
 	Homepage    string                `toml:"homepage"`
+	Docs        string                `toml:"docs"`
 	Readme      string                `toml:"readme"`
 	DepsFrom    []DepFrom             `toml:"deps-from"`
 	Linker      Linker                `toml:"linker"`

@@ -25,6 +25,8 @@ import (
 
 type indexEntry struct {
 	Path        string   `json:"path"`
+	Pkg         string   `json:"pkg"`
+	Dir         string   `json:"dir"`
 	Version     string   `json:"version"`
 	Tag         string   `json:"tag"`
 	Description string   `json:"description,omitempty"`
@@ -33,6 +35,9 @@ type indexEntry struct {
 	Homepage    string   `json:"homepage,omitempty"`
 	FFI         bool     `json:"ffi,omitempty"`
 	Runtime     bool     `json:"runtime,omitempty"`
+	Hooks       []string `json:"hooks,omitempty"`
+	Readme      string   `json:"readme,omitempty"`
+	Docs        string   `json:"docs,omitempty"`
 	Deps        []string `json:"deps,omitempty"`
 }
 
@@ -153,12 +158,15 @@ func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
 		Runtime []string `toml:"runtime"`
 	}
 	type pkgEntry struct {
-		Modules     []string `toml:"modules"`
-		Description string   `toml:"description"`
-		Keywords    []string `toml:"keywords"`
-		License     string   `toml:"license"`
-		Homepage    string   `toml:"homepage"`
-		Linker      linker   `toml:"linker"`
+		Modules     []string              `toml:"modules"`
+		Description string                `toml:"description"`
+		Keywords    []string              `toml:"keywords"`
+		License     string                `toml:"license"`
+		Homepage    string                `toml:"homepage"`
+		Readme      string                `toml:"readme"`
+		Docs        string                `toml:"docs"`
+		Hooks       map[string][][]string `toml:"hooks"`
+		Linker      linker                `toml:"linker"`
 		DepsFrom    []struct {
 			Repo string   `toml:"repo"`
 			Libs []string `toml:"libs"`
@@ -197,9 +205,10 @@ func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
 				}
 			}
 			out = append(out, indexEntry{
-				Path: modPath, Version: ref, Tag: ref,
+				Path: modPath, Pkg: name, Dir: imp, Version: ref, Tag: ref,
 				Description: p.Description, Keywords: p.Keywords, License: p.License,
-				Homepage: p.Homepage, FFI: len(p.Linker.FFI) > 0,
+				Homepage: p.Homepage, Readme: p.Readme, Docs: p.Docs,
+				Hooks: hookNames(p.Hooks), FFI: len(p.Linker.FFI) > 0,
 				Runtime: len(p.Linker.Runtime) > 0, Deps: deps,
 			})
 			if follow && depth < 1 {
@@ -223,6 +232,16 @@ func indexRepo(norm, ref string, follow bool, depth int) ([]indexEntry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// hookNames lists the hook kinds a package declares, sorted.
+func hookNames(h map[string][][]string) []string {
+	var names []string
+	for k := range h {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // refSHA resolves a tag or branch to its commit without cloning.
