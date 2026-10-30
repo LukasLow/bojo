@@ -1173,6 +1173,32 @@ func readPending(dir string) ([]hooks.Entry, error) {
 	return entries, nil
 }
 
+// insertIntoTable appends one line at the end of an existing table, before the
+// next section header. Comments and formatting stay untouched.
+func insertIntoTable(text, header, line string) (string, error) {
+	idx := strings.Index(text, header)
+	if idx < 0 {
+		return "", fmt.Errorf("table %s not found", header)
+	}
+	start := strings.IndexByte(text[idx:], '\n')
+	if start < 0 {
+		return text + "\n" + line, nil
+	}
+	start += idx + 1
+	end := len(text)
+	for i := start; i < len(text); i++ {
+		if text[i] == '[' && i > 0 && text[i-1] == '\n' {
+			end = i
+			break
+		}
+	}
+	prefix := text[:end]
+	if prefix != "" && !strings.HasSuffix(prefix, "\n") {
+		prefix += "\n"
+	}
+	return prefix + line + "\n" + text[end:], nil
+}
+
 func appendDepFrom(dir string, sp spec, alias string) error {
 	path := filepath.Join(dir, "bojo.toml")
 	raw, err := os.ReadFile(path)
@@ -1180,19 +1206,24 @@ func appendDepFrom(dir string, sp spec, alias string) error {
 		return err
 	}
 	header := fmt.Sprintf("[deps-from.%q]", sp.repo)
+	line := fmt.Sprintf("%s = %q\n", sp.pkg, sp.tag())
+	if alias != "" {
+		line = fmt.Sprintf("%s = { version = %q, as = %q }\n", sp.pkg, sp.tag(), alias)
+	}
 	if strings.Contains(string(raw), header) {
-		return fmt.Errorf("%s already declares %s; add %q to that table by hand", path, sp.repo, sp.pkg)
+		// Insert into the existing table, keeping every comment and the order.
+		updated, err := insertIntoTable(string(raw), header, line)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(updated), 0o644)
 	}
 	var b strings.Builder
 	if !strings.HasSuffix(string(raw), "\n") {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n" + header + "\n")
-	if alias != "" {
-		fmt.Fprintf(&b, "%s = { version = %q, as = %q }\n", sp.pkg, sp.tag(), alias)
-	} else {
-		fmt.Fprintf(&b, "%s = %q\n", sp.pkg, sp.tag())
-	}
+	b.WriteString(line)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
